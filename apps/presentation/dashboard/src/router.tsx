@@ -16,6 +16,7 @@ import { BenchmarkStudyPage } from "./views/benchmark-study-page";
 const searchSchema = z.object({
   goalId: z.string().optional().default(""),
   statusUrl: z.string().optional().default(""),
+  view: z.enum(["machine", "all-machines"]).optional().default("machine"),
 });
 
 const frontstageSearchSchema = z.object({

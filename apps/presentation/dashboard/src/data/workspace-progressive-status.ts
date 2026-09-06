@@ -20,6 +20,13 @@ export type WorkspaceProgress = {
   errors: Record<string, WorkspaceLoadError>;
 };
 
+export class WorkspaceGoalSnapshotError extends Error {
+  constructor(readonly code: WorkspaceLoadError) {
+    super(code);
+    this.name = "WorkspaceGoalSnapshotError";
+  }
+}
+
 function queryUrl(url: string, fields: Record<string, string>, base: string) {
   const parsed = new URL(url, base);
   parsed.searchParams.delete("goal_activation");
@@ -51,6 +58,51 @@ export function directoryStatusPayload(directory: WorkspaceDirectory): StatusPay
   });
 }
 
+/** Fetch one exact Goal at one verified workspace registry revision. */
+export async function fetchWorkspaceGoalSnapshot(
+  url: string,
+  base: string,
+  goalId: string,
+  registryRevision: string,
+  signal?: AbortSignal,
+): Promise<StatusPayload> {
+  let response: Response;
+  try {
+    response = await fetch(queryUrl(url, { goal_id: goalId }, base), {
+      cache: "no-store",
+      signal,
+    });
+  } catch (error) {
+    if (error instanceof WorkspaceGoalSnapshotError) throw error;
+    throw new WorkspaceGoalSnapshotError(error instanceof TypeError ? "network" : "invalid");
+  }
+  if (!response.ok) {
+    throw new WorkspaceGoalSnapshotError(
+      response.status === 409 ? "revision" : response.status >= 500 ? "service" : "scope",
+    );
+  }
+  let raw: unknown;
+  try {
+    raw = await response.json();
+  } catch {
+    throw new WorkspaceGoalSnapshotError("invalid");
+  }
+  if (!raw || typeof raw !== "object"
+      || (raw as Record<string, unknown>).workspace_registry_revision !== registryRevision) {
+    throw new WorkspaceGoalSnapshotError("revision");
+  }
+  let payload: StatusPayload;
+  try {
+    payload = parseStatusPayload(raw);
+  } catch {
+    throw new WorkspaceGoalSnapshotError("invalid");
+  }
+  if (payload.run_history.goals.length !== 1 || payload.run_history.goals[0]?.id !== goalId) {
+    throw new WorkspaceGoalSnapshotError("scope");
+  }
+  return payload;
+}
+
 /** Bounded fan-out: a slow/failed Goal cannot block the directory or its peers. */
 export async function loadWorkspaceGoalSnapshots(
   url: string,
@@ -79,23 +131,20 @@ export async function loadWorkspaceGoalSnapshots(
       const timeout = setTimeout(() => { timedOut = true; controller.abort(); }, 30_000);
       let failure: WorkspaceLoadError | null = null;
       try {
-        const response = await fetch(queryUrl(url, { goal_id: goal.id }, base), {
-          cache: "no-store", signal: controller.signal,
-        });
-        if (!response.ok) {
-          failure = response.status === 409 ? "revision" : response.status >= 500 ? "service" : "scope";
-        } else {
-          const raw = await response.json();
-          if (raw.workspace_registry_revision !== directory.registry_revision) failure = "revision";
-          else {
-            const payload = parseStatusPayload(raw);
-            if (!payload.run_history.goals.some((item) => item.id === goal.id)
-              || payload.run_history.goals.some((item) => item.id !== goal.id)) failure = "scope";
-            else if (isCurrent() && !signal?.aborted) onGoal(goal.id, payload, null);
-          }
-        }
+        const payload = await fetchWorkspaceGoalSnapshot(
+          url,
+          base,
+          goal.id,
+          directory.registry_revision,
+          controller.signal,
+        );
+        if (isCurrent() && !signal?.aborted) onGoal(goal.id, payload, null);
       } catch (error) {
-        failure = timedOut ? "timeout" : error instanceof TypeError ? "network" : "invalid";
+        failure = timedOut
+          ? "timeout"
+          : error instanceof WorkspaceGoalSnapshotError
+            ? error.code
+            : "invalid";
       } finally {
         clearTimeout(timeout);
         signal?.removeEventListener("abort", cancel);

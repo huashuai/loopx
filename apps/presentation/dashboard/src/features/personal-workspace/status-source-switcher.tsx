@@ -23,6 +23,7 @@ export type StatusSourceControl = {
   onAdd: (input: { ensureTunnel?: boolean; label: string; statusUrl: string }) => { error?: string };
   onRemove: (sourceId: string) => void;
   onSelect: (sourceId: string) => void;
+  onSelectAll: () => void;
   remoteGoalCreation?: {
     errorMessage?: string | null;
     onToggle: () => void;
@@ -30,6 +31,7 @@ export type StatusSourceControl = {
     state: RemoteGoalCreationConnectionState;
   };
   sources: StatusSource[];
+  view: "machine" | "all-machines";
 };
 
 export function StatusSourceSwitcher({
@@ -39,8 +41,10 @@ export function StatusSourceSwitcher({
   onAdd,
   onRemove,
   onSelect,
+  onSelectAll,
   remoteGoalCreation,
   sources,
+  view,
 }: StatusSourceControl) {
   const { t } = useWorkspaceI18n();
   const [adding, setAdding] = useState(false);
@@ -56,6 +60,7 @@ export function StatusSourceSwitcher({
   const [statusUrl, setStatusUrl] = useState("");
   const quickAddPrefix = "configured:";
   const sourceOptions = [
+    { label: t("source.allMachines"), value: "all-machines" },
     ...sources.map((source) => ({ label: source.label, value: source.id })),
     ...configuredHosts
       .filter((host) => !sources.some((source) => source.label === host.alias))
@@ -187,6 +192,10 @@ export function StatusSourceSwitcher({
         className="personal-status-source-select"
         icon={<Server size={15} />}
         onChange={(value) => {
+          if (value === "all-machines") {
+            onSelectAll();
+            return;
+          }
           if (value.startsWith(quickAddPrefix)) {
             quickAddConfiguredHost(value.slice(quickAddPrefix.length));
             return;
@@ -194,32 +203,36 @@ export function StatusSourceSwitcher({
           onSelect(value);
         }}
         options={sourceOptions}
-        value={activeSource.id}
+        value={view === "all-machines" ? "all-machines" : activeSource.id}
       />
       <div className="personal-status-source-meta">
-        <span className={`is-${connectionState}`}><i />{connectionState === "loading" ? t("source.connecting") : connectionState === "error" ? t("source.notAvailable") : t("source.connected")}</span>
-        <small>{remoteGoalCreation?.state === "ready"
-          ? t("source.remoteGoalReady")
-          : activeSource.readOnly ? t("source.readOnly") : t("source.localInteractive")}</small>
-        {activeSource.kind === "ssh_tunnel" && remoteGoalCreation ? (
-          <button
-            aria-label={remoteGoalPresentation?.action === "disable"
-              ? t("source.disableRemoteGoal")
-              : remoteGoalPresentation?.action === "retry" ? t("source.retryRemoteGoal") : t("source.enableRemoteGoal")}
-            className="personal-status-source-goal-toggle"
-            disabled={remoteGoalCreation.state === "checking"}
-            onClick={remoteGoalCreation.onToggle}
-            title={remoteGoalPresentation?.action === "disable"
-              ? t("source.disableRemoteGoal")
-              : remoteGoalPresentation?.action === "retry" ? t("source.retryRemoteGoal") : t("source.enableRemoteGoal")}
-            type="button"
-          >{remoteGoalPresentation?.label === "checking" ? "…"
-            : remoteGoalPresentation?.label === "ready" ? "Goal ✓"
-              : remoteGoalPresentation?.label === "retry" ? t("source.retryRemoteGoalShort") : "+ Goal"}</button>
-        ) : null}
-        {activeSource.kind === "ssh_tunnel" ? (
-          <button aria-label={t("source.remove", { source: activeSource.label })} onClick={() => onRemove(activeSource.id)} title={t("source.removeCurrent")} type="button"><Trash2 size={12} /></button>
-        ) : null}
+        {view === "all-machines" ? (
+          <><span><i />{t("source.allMachines")}</span><small>{t("source.allMachinesReadOnly")}</small></>
+        ) : <>
+          <span className={`is-${connectionState}`}><i />{connectionState === "loading" ? t("source.connecting") : connectionState === "error" ? t("source.notAvailable") : t("source.connected")}</span>
+          <small>{remoteGoalCreation?.state === "ready"
+            ? t("source.remoteGoalReady")
+            : activeSource.readOnly ? t("source.readOnly") : t("source.localInteractive")}</small>
+          {activeSource.kind === "ssh_tunnel" && remoteGoalCreation ? (
+            <button
+              aria-label={remoteGoalPresentation?.action === "disable"
+                ? t("source.disableRemoteGoal")
+                : remoteGoalPresentation?.action === "retry" ? t("source.retryRemoteGoal") : t("source.enableRemoteGoal")}
+              className="personal-status-source-goal-toggle"
+              disabled={remoteGoalCreation.state === "checking"}
+              onClick={remoteGoalCreation.onToggle}
+              title={remoteGoalPresentation?.action === "disable"
+                ? t("source.disableRemoteGoal")
+                : remoteGoalPresentation?.action === "retry" ? t("source.retryRemoteGoal") : t("source.enableRemoteGoal")}
+              type="button"
+            >{remoteGoalPresentation?.label === "checking" ? "…"
+              : remoteGoalPresentation?.label === "ready" ? "Goal ✓"
+                : remoteGoalPresentation?.label === "retry" ? t("source.retryRemoteGoalShort") : "+ Goal"}</button>
+          ) : null}
+          {activeSource.kind === "ssh_tunnel" ? (
+            <button aria-label={t("source.remove", { source: activeSource.label })} onClick={() => onRemove(activeSource.id)} title={t("source.removeCurrent")} type="button"><Trash2 size={12} /></button>
+          ) : null}
+        </>}
       </div>
       {remoteGoalCreation?.state === "error" && remoteGoalCreation.errorMessage
         ? <p className="personal-status-source-error" role="alert">{remoteGoalCreation.errorMessage}</p>

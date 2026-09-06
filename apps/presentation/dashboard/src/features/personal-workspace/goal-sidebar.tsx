@@ -44,6 +44,7 @@ export function GoalSidebar({
 }) {
   const { locale, t } = useWorkspaceI18n();
   const [sorting, setSorting] = useState(false);
+  const allMachinesMode = statusSourceControl?.view === "all-machines";
   const ordering = useGoalOrder(goals.filter((goal) => goal.activationState !== "stopped"), statusSourceControl?.activeSource.statusUrl ?? "/status.json");
   const activeGoals = ordering.sorted;
   const stoppedGoals = goals.filter((goal) => goal.activationState === "stopped");
@@ -115,12 +116,12 @@ export function GoalSidebar({
           type="button"
         >
           <span className="personal-manager-icon"><Bot size={17} /></span>
-          <span>{t("sidebar.manager")}</span>
+          <span>{allMachinesMode ? t("source.allMachines") : t("sidebar.manager")}</span>
           {attentionCount > 0 ? <span className="personal-sidebar-count">{attentionCount}</span> : null}
           <ChevronRight size={15} />
         </button>
 
-        <div className="personal-sidebar-section-title">
+        {!allMachinesMode ? <><div className="personal-sidebar-section-title">
           <span>Goals</span>
           <span className="personal-sidebar-title-actions"><small>{activeGoals.length}</small><button aria-label={t("sidebar.sortGoals")} title={t("sidebar.sortGoals")} aria-pressed={sorting} onClick={() => setSorting(!sorting)} type="button"><ArrowUpDown aria-hidden="true" size={15} /></button>{onRequestGoalCreate ? <button aria-label={t("sidebar.createGoal")} onClick={onRequestGoalCreate} type="button"><Plus size={15} /></button> : null}</span>
         </div>
@@ -151,12 +152,14 @@ export function GoalSidebar({
               {stoppedGoals.map((goal) => goalRow(goal, true))}
             </div>
           </details>
-        ) : null}
+        ) : null}</> : (
+          <p className="personal-all-machines-sidebar-note">{t("allMachines.readOnlyDescription")}</p>
+        )}
       </nav>
 
       <div className="personal-sidebar-footer">
         <DesktopUpdate />
-        {onOpenSettings ? (
+        {onOpenSettings && !allMachinesMode ? (
           <button aria-label={t("settings.open")} className="personal-sidebar-utility" onClick={onOpenSettings} type="button">
             <span className="personal-sidebar-utility-icon"><Settings2 size={17} /></span>
             <span className="personal-sidebar-utility-copy"><strong>{t("settings.open")}</strong><small>{t("settings.eyebrow")}</small></span>

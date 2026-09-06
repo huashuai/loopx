@@ -5,6 +5,7 @@ import {
   periodicReportIndexResponseSchema,
   periodicReportProjectionResponseSchema,
 } from "./status";
+import type { StatusSource } from "./status-source-catalog";
 
 export const expectedStatusContractSchemaVersion = 2;
 export const fallbackStatusContractReloadHint = "scripts/macos-dashboard-launchagent.sh restart";
@@ -89,6 +90,39 @@ export async function fetchFrontstageStatusPayload(statusUrl: string) {
     throw new Error(`HTTP ${response.status} while loading ${statusUrl}`);
   }
   return parseStatusPayload(await response.json());
+}
+
+export class MachineStatusLoadError extends Error {
+  constructor(readonly code: "invalid_source" | "http" | "network" | "invalid_payload") {
+    super(code);
+    this.name = "MachineStatusLoadError";
+  }
+}
+
+export async function fetchMachineStatusPayload(
+  source: StatusSource,
+  baseHref: string,
+  signal: AbortSignal,
+): Promise<StatusPayload> {
+  const resolved = resolveLocalStatusUrl(source.statusUrl, baseHref);
+  if (!resolved.source) throw new MachineStatusLoadError("invalid_source");
+  const url = scopedStatusUrl(resolved.source.url, "active", baseHref);
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      cache: "no-store",
+      signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
+    });
+  } catch (error) {
+    if (signal.aborted) throw error;
+    throw new MachineStatusLoadError("network");
+  }
+  if (!response.ok) throw new MachineStatusLoadError("http");
+  try {
+    return parseStatusPayload(await response.json());
+  } catch {
+    throw new MachineStatusLoadError("invalid_payload");
+  }
 }
 
 export function scopedStatusUrl(

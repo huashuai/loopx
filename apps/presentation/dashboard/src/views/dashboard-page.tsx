@@ -1,4 +1,12 @@
-import { directoryStatusPayload, fetchWorkspaceDirectory, loadWorkspaceGoalSnapshots, type WorkspaceProgress, type WorkspaceLoadError } from "../data/workspace-progressive-status";
+import {
+  directoryStatusPayload,
+  fetchWorkspaceDirectory,
+  fetchWorkspaceGoalSnapshot,
+  loadWorkspaceGoalSnapshots,
+  WorkspaceGoalSnapshotError,
+  type WorkspaceProgress,
+  type WorkspaceLoadError,
+} from "../data/workspace-progressive-status";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { CircleAlert, Moon, RefreshCw, Sun } from "lucide-react";
 
@@ -59,6 +67,7 @@ import {
 import {
   beginStatusRequest,
   createStatusRequestFence,
+  resetStatusRequestFence,
   reserveStatusSourceSelection,
   statusRequestCanCommit,
   statusRequestIsCurrent,
@@ -70,6 +79,16 @@ import { Button } from "../components/ui/button";
 import { Card, CardContent } from "../components/ui/card";
 import { Badge } from "../components/ui/badge";
 import { PersonalWorkspacePage } from "../features/personal-workspace/personal-workspace-page";
+import { AllMachinesOverviewPage } from "../features/personal-workspace/all-machines-overview";
+import type { MachineGoalRef } from "../features/personal-workspace/all-machines-model";
+import { useAllMachinesOverview } from "../features/personal-workspace/use-all-machines-overview";
+import {
+  assertMachineWriteTarget,
+  bindingToken,
+  deriveMachineWriteAuthority,
+  type CommittedMachineBinding,
+  type MachineBindingToken,
+} from "../features/personal-workspace/machine-workspace-authority";
 import { useWorkspaceI18n, type WorkspaceTranslate } from "../features/personal-workspace/i18n";
 import {
   agentStatusSentence,
@@ -1327,8 +1346,10 @@ function buildPersonalHomeModel(
   };
 }
 function PersonalGoalHome({
+  assertMachineBinding,
   goalArchiveLoadState,
   isLoading,
+  machineBinding,
   onGoalActivationStateChange,
   onGoalDeleted,
   onSelectGoal,
@@ -1341,11 +1362,14 @@ function PersonalGoalHome({
   rows,
   selectedGoalId,
   statusSourceControl,
+  readOnly,
   theme,
   toggleTheme,
 }: {
+  assertMachineBinding: (binding: MachineBindingToken, goalId?: string) => void;
   goalArchiveLoadState: WorkspaceGoalArchiveLoadState;
   isLoading: boolean;
+  machineBinding?: MachineBindingToken;
   onGoalActivationStateChange: (goalId: string, activationState: "active" | "stopped") => void;
   onGoalDeleted: (goalId: string) => void;
   onSelectGoal: (goalId: string) => void;
@@ -1358,10 +1382,10 @@ function PersonalGoalHome({
   rows: GoalDirectoryRow[];
   selectedGoalId: string;
   statusSourceControl: StatusSourceControl;
+  readOnly: boolean;
   theme: "light" | "dark";
   toggleTheme: () => void;
 }) {
-  const readOnly = statusSourceControl.activeSource.readOnly;
   const { t } = useWorkspaceI18n();
   const [runtimeAgents, setRuntimeAgents] = useState<Array<{
     adapter_kind: string;
@@ -1564,11 +1588,14 @@ function PersonalGoalHome({
   }
 
   useEffect(() => {
-    if (readOnly) {
+    if (statusSourceControl.activeSource.readOnly) {
       setRuntimeAgents(remoteGoalControl?.capabilities.adapters ?? []);
       setGoalSubagentConfigurationEnabled(false);
       return;
     }
+    // A same-machine refresh temporarily closes the write fence but should
+    // not erase already-rendered local capability state or reviewed receipts.
+    if (readOnly) return;
     let cancelled = false;
     void fetchChatCapabilities()
       .then((capabilities) => {
@@ -1586,7 +1613,7 @@ function PersonalGoalHome({
     return () => {
       cancelled = true;
     };
-  }, [readOnly, remoteGoalControl]);
+  }, [readOnly, remoteGoalControl, statusSourceControl.activeSource.readOnly]);
 
   useEffect(() => {
     try {
@@ -2566,6 +2593,7 @@ function PersonalGoalHome({
           trustScope: agent.trustScope,
           workspaceCompatibility: agent.available ? "当前 Goal 写入前验证" : "不可用，需先修复 Endpoint",
         }))}
+        assertMachineBinding={assertMachineBinding}
         callbacks={{
           onApplyAttention: (attention) => openGoalChat(attention.goalId),
           onCorrectRun: async (run, message) => {
@@ -2722,6 +2750,7 @@ function PersonalGoalHome({
           && remoteGoalControl.sourceId === statusSourceControl.activeSource.id
           && statusSourceControl.remoteGoalCreation?.state === "ready"
         )}
+        machineBinding={machineBinding}
         model={workspaceModel}
         readOnly={readOnly}
         selectedAgentId={selectedAgent.agentId}
@@ -2817,6 +2846,7 @@ function StatusRequestView({
 
 
 export function DashboardPage() {
+  const { t } = useWorkspaceI18n();
   const search = dashboardRoute.useSearch();
   const navigate = dashboardRoute.useNavigate();
   const [theme, setTheme] = useState<"light" | "dark">("light");
@@ -2840,6 +2870,9 @@ export function DashboardPage() {
     search.statusUrl.trim() || null,
   );
   const [exampleModeRequested, setExampleModeRequested] = useState(false);
+  const [allMachinesSelectionError, setAllMachinesSelectionError] = useState<string | null>(null);
+  const [committedMachine, setCommittedMachine] = useState<CommittedMachineBinding | null>(null);
+  const committedMachineRef = useRef<CommittedMachineBinding | null>(null);
   const [remoteGoalControl, setRemoteGoalControl] = useState<ConnectedRemoteGoalControl | null>(null);
   const [remoteGoalControlStatus, setRemoteGoalControlStatus] = useState<{
     errorMessage: string | null;
@@ -2862,6 +2895,25 @@ export function DashboardPage() {
     loadedStatusUrl,
     window.location.href,
   );
+  const committedStatusSource = committedMachine
+    ? statusSourceCatalog.sources.find((candidate) => candidate.id === committedMachine.sourceId)
+      ?? projectedStatusSourceForUrl(
+        statusSourceCatalog,
+        committedMachine.statusUrl,
+        window.location.href,
+      )
+    : null;
+  const machineWriteAuthority = deriveMachineWriteAuthority({
+    committed: committedMachine,
+    requestedSourceId: requestedStatusUrl
+      ? projectedStatusSourceForUrl(statusSourceCatalog, requestedStatusUrl, window.location.href).id
+      : null,
+    selectedGoalId: search.goalId || null,
+    source: committedStatusSource,
+    view: search.view,
+  });
+  const machineWriteAuthorityRef = useRef(machineWriteAuthority);
+  machineWriteAuthorityRef.current = machineWriteAuthority;
 
   useEffect(() => {
     let cancelled = false;
@@ -2908,7 +2960,57 @@ export function DashboardPage() {
     requestFailed,
   ]);
 
-  const statusRequestActive = source.kind === "example"
+  function replaceCommittedMachine(next: CommittedMachineBinding | null) {
+    committedMachineRef.current = next;
+    setCommittedMachine(next);
+  }
+
+  function invalidateCommittedMachine() {
+    replaceCommittedMachine(null);
+    machineWriteAuthorityRef.current = { kind: "selecting" };
+  }
+
+  function assertCommittedMachine(binding: MachineBindingToken, goalId?: string) {
+    assertMachineWriteTarget(machineWriteAuthorityRef.current, binding, goalId);
+  }
+
+  function commitMachineBinding(
+    url: string,
+    request: StatusRequest,
+    registryRevision: string | null,
+    verifiedGoalIds: Iterable<string>,
+  ) {
+    const bindingSource = projectedStatusSourceForUrl(statusSourceCatalog, url, window.location.href);
+    replaceCommittedMachine({
+      committedAt: Date.now(),
+      registryRevision,
+      selectionRevision: request.selectionRevision,
+      sourceId: bindingSource.id,
+      statusUrl: bindingSource.statusUrl,
+      verifiedGoalIds: new Set(verifiedGoalIds),
+    });
+  }
+
+  function verifyCommittedGoal(
+    url: string,
+    request: StatusRequest,
+    registryRevision: string,
+    goalId: string,
+  ) {
+    const current = committedMachineRef.current;
+    const bindingSource = projectedStatusSourceForUrl(statusSourceCatalog, url, window.location.href);
+    if (!current
+        || !statusRequestCanCommit(statusRequestFenceRef.current, request)
+        || current.sourceId !== bindingSource.id
+        || current.selectionRevision !== request.selectionRevision
+        || current.registryRevision !== registryRevision) return;
+    replaceCommittedMachine({
+      ...current,
+      verifiedGoalIds: new Set([...current.verifiedGoalIds, goalId]),
+    });
+  }
+
+  const statusRequestActive = search.view === "machine" && source.kind === "example"
     && !exampleModeRequested;
   const queue = payload.attention_queue;
   const runHistory = payload.run_history;
@@ -2928,6 +3030,11 @@ export function DashboardPage() {
           && archiveRevision !== null
           && request.registryRevision !== archiveRevision;
         setPayload((current) => mergeScopedStatusProjections(current, archivePayload));
+        if (!revisionMismatch && archiveRevision !== null) {
+          for (const goal of archivePayload.run_history.goals) {
+            verifyCommittedGoal(url, request, archiveRevision, goal.id);
+          }
+        }
         if (revisionMismatch && resyncAttempt < 1) {
           void loadFromUrl(url, { background: true, resyncAttempt: resyncAttempt + 1 });
           return;
@@ -2955,6 +3062,8 @@ export function DashboardPage() {
     url: string,
     nextPayload: StatusPayload,
     request: StatusRequest,
+    binding: { registryRevision: string | null; verifiedGoalIds: Iterable<string> },
+    goalId?: string,
   ) {
     if (request.background) {
       setPayload((current) => mergeScopedStatusProjections(current, nextPayload));
@@ -2962,13 +3071,16 @@ export function DashboardPage() {
     }
     const nextSource: DataSource = { kind: "url", label: url };
     statusRequestFenceRef.current.loadedUrl = url;
+    commitMachineBinding(url, request, binding.registryRevision, binding.verifiedGoalIds);
     setPayload(nextPayload);
     setSource(nextSource);
     setStatusUrl(url);
     await navigate({
       search: (current) => ({
         ...current,
+        goalId: goalId ?? ("goalId" in current ? current.goalId : ""),
         statusUrl: url,
+        view: "machine",
       }),
     });
     if (!statusRequestIsCurrent(statusRequestFenceRef.current, request)) return false;
@@ -2992,11 +3104,17 @@ export function DashboardPage() {
       if (!background) setLoadError("状态地址不能为空");
       return;
     }
+    const sameMachineRevalidation = !background
+      && options.selectionRevision === undefined
+      && statusRequestFenceRef.current.loadedUrl === trimmed
+      && statusRequestFenceRef.current.requestedUrl === null;
     const request = beginStatusRequest(statusRequestFenceRef.current, trimmed, {
       background,
-      selectionRevision: options.selectionRevision,
+      selectionRevision: options.selectionRevision
+        ?? (sameMachineRevalidation ? statusRequestFenceRef.current.selectionRevision : undefined),
     });
     if (!request) return;
+    if (!background) invalidateCommittedMachine();
     progressiveAbortRef.current?.abort();
     const progressiveAbort = new AbortController();
     progressiveAbortRef.current = progressiveAbort;
@@ -3012,6 +3130,7 @@ export function DashboardPage() {
       const directory = await fetchWorkspaceDirectory(trimmed, window.location.href).catch(() => null);
       if (!statusRequestCanCommit(statusRequestFenceRef.current, request)) return;
       if (directory) {
+        request.registryRevision = directory.registry_revision;
         const retained = options.retryOnly && source.kind === "url" && source.label === trimmed
           && progress?.directory.registry_revision === directory.registry_revision ? progress.snapshots : {};
         setProgress({ directory, snapshots: retained, errors: {} });
@@ -3019,11 +3138,15 @@ export function DashboardPage() {
         let directoryChanged = false;
         const initial = directoryStatusPayload(directory);
         if (background) setPayload(initial);
-        else if (!await commitLoadedStatus(trimmed, initial, request)) return;
+        else if (!await commitLoadedStatus(trimmed, initial, request, {
+          registryRevision: directory.registry_revision,
+          verifiedGoalIds: [],
+        })) return;
         setGoalArchiveLoadState({ error: null, phase: "loading" });
         await loadWorkspaceGoalSnapshots(trimmed, window.location.href, requestedDirectory,
           (id, snapshot, error) => {
             if (error === "revision") directoryChanged = true;
+            if (snapshot) verifyCommittedGoal(trimmed, request, directory.registry_revision, id);
             setProgress((current) => current ? {
             ...current,
             snapshots: snapshot ? { ...current.snapshots, [id]: snapshot } : current.snapshots,
@@ -3050,7 +3173,10 @@ export function DashboardPage() {
       if (!statusRequestCanCommit(statusRequestFenceRef.current, request)) return;
       setProgress(null);
       request.registryRevision = nextPayload.goal_projection?.registry_revision ?? null;
-      if (!await commitLoadedStatus(trimmed, nextPayload, request)) return;
+      if (!await commitLoadedStatus(trimmed, nextPayload, request, {
+        registryRevision: request.registryRevision,
+        verifiedGoalIds: nextPayload.run_history.goals.map((goal) => goal.id),
+      })) return;
       if (nextPayload.goal_projection?.scope !== "active"
         || nextPayload.goal_projection.complete) {
         setGoalArchiveLoadState({ error: null, phase: "ready" });
@@ -3068,6 +3194,7 @@ export function DashboardPage() {
   }
 
   function selectStatusSource(nextSource: StatusSource, options: { ensureTunnel?: boolean } = {}) {
+    invalidateCommittedMachine();
     progressiveAbortRef.current?.abort();
     const selectionRevision = reserveStatusSourceSelection(
       statusRequestFenceRef.current,
@@ -3130,6 +3257,18 @@ export function DashboardPage() {
       if (!nextSource) return;
       selectStatusSource(nextSource, { ensureTunnel: nextSource.kind === "ssh_tunnel" });
     },
+    onSelectAll: () => {
+      invalidateCommittedMachine();
+      progressiveAbortRef.current?.abort();
+      resetStatusRequestFence(statusRequestFenceRef.current);
+      setRequestedStatusUrl(null);
+      setIsLoading(false);
+      setLoadError(null);
+      setAllMachinesSelectionError(null);
+      void navigate({
+        search: (current) => ({ ...current, goalId: "", view: "all-machines" }),
+      });
+    },
     remoteGoalCreation: activeStatusSource.kind === "ssh_tunnel" ? {
       errorMessage: !requestFailed && remoteGoalControlStatus.sourceId === activeStatusSource.id
         ? remoteGoalControlStatus.errorMessage
@@ -3159,9 +3298,117 @@ export function DashboardPage() {
     sources: activeStatusSource.id === "temporary"
       ? [...statusSourceCatalog.sources, activeStatusSource]
       : statusSourceCatalog.sources,
+    view: search.view,
   };
 
+  const allMachines = useAllMachinesOverview({
+    enabled: search.view === "all-machines",
+    sources: statusSourceCatalog.sources,
+    buildModel: (machinePayload) => normalizePersonalHomeModel(buildPersonalHomeModel(
+      machinePayload,
+      buildGoalDirectoryRows(machinePayload.run_history.goals, machinePayload.attention_queue.items),
+      t,
+    )),
+  });
+
+  async function selectAndOpenMachineGoal(ref: MachineGoalRef) {
+    const nextSource = statusSourceCatalog.sources.find((candidate) => candidate.id === ref.sourceId);
+    if (!nextSource) {
+      setAllMachinesSelectionError("The owning machine is no longer registered. Refresh the source catalog and try again.");
+      return;
+    }
+    invalidateCommittedMachine();
+    progressiveAbortRef.current?.abort();
+    setAllMachinesSelectionError(null);
+    preferredGoalRef.current = ref.goalId;
+    const selectionRevision = reserveStatusSourceSelection(
+      statusRequestFenceRef.current,
+      nextSource.statusUrl,
+    );
+    const request = beginStatusRequest(statusRequestFenceRef.current, nextSource.statusUrl, {
+      background: false,
+      selectionRevision,
+    });
+    if (!request) return;
+    setRequestedStatusUrl(nextSource.statusUrl);
+    setIsLoading(true);
+    setLoadError(null);
+    setGoalArchiveLoadState({ error: null, phase: "loading" });
+    try {
+      const directory = await fetchWorkspaceDirectory(nextSource.statusUrl, window.location.href);
+      if (!statusRequestCanCommit(statusRequestFenceRef.current, request)) return;
+      const directoryGoal = directory?.goals.find((goal) => goal.id === ref.goalId);
+      if (!directory || !directoryGoal) {
+        throw new WorkspaceGoalSnapshotError(directory ? "scope" : "service");
+      }
+      const exactSnapshot = await fetchWorkspaceGoalSnapshot(
+        nextSource.statusUrl,
+        window.location.href,
+        ref.goalId,
+        directory.registry_revision,
+        AbortSignal.timeout(30_000),
+      );
+      if (!statusRequestCanCommit(statusRequestFenceRef.current, request)) return;
+      request.registryRevision = directory.registry_revision;
+      setProgress({
+        directory,
+        errors: {},
+        snapshots: { [ref.goalId]: exactSnapshot },
+      });
+      const initial = directoryStatusPayload(directory);
+      if (!await commitLoadedStatus(nextSource.statusUrl, initial, request, {
+        registryRevision: directory.registry_revision,
+        verifiedGoalIds: [ref.goalId],
+      }, ref.goalId)) return;
+      setGoalArchiveLoadState({ error: null, phase: "loading" });
+      const remaining = {
+        ...directory,
+        goals: directory.goals.filter((goal) => goal.id !== ref.goalId),
+      };
+      const progressiveAbort = new AbortController();
+      progressiveAbortRef.current = progressiveAbort;
+      void loadWorkspaceGoalSnapshots(
+        nextSource.statusUrl,
+        window.location.href,
+        remaining,
+        (id, snapshot, error) => {
+          if (snapshot) verifyCommittedGoal(nextSource.statusUrl, request, directory.registry_revision, id);
+          setProgress((current) => current ? {
+            ...current,
+            snapshots: snapshot ? { ...current.snapshots, [id]: snapshot } : current.snapshots,
+            errors: error ? { ...current.errors, [id]: error } : current.errors,
+          } : current);
+        },
+        () => statusRequestCanCommit(statusRequestFenceRef.current, request),
+        () => preferredGoalRef.current,
+        progressiveAbort.signal,
+      ).then(() => {
+        if (statusRequestCanCommit(statusRequestFenceRef.current, request)) {
+          setGoalArchiveLoadState({ error: null, phase: "ready" });
+        }
+      });
+    } catch (error) {
+      if (!statusRequestIsCurrent(statusRequestFenceRef.current, request)) return;
+      statusRequestFenceRef.current.requestedUrl = null;
+      setRequestedStatusUrl(null);
+      const reason = error instanceof WorkspaceGoalSnapshotError
+        ? error.code
+        : "network";
+      setAllMachinesSelectionError(
+        reason === "scope"
+          ? "The Goal is no longer present on its owning machine. Refresh All machines and try again."
+          : reason === "revision"
+            ? "The owning machine changed while the Goal was opening. Refresh All machines and try again."
+            : "The owning machine could not be revalidated. Check its connection and try again.",
+      );
+      setGoalArchiveLoadState({ error: null, phase: "idle" });
+    } finally {
+      if (statusRequestIsCurrent(statusRequestFenceRef.current, request)) setIsLoading(false);
+    }
+  }
+
   useEffect(() => {
+    if (search.view !== "machine") return;
     const trimmedStatusUrl = search.statusUrl.trim();
     if (trimmedStatusUrl) {
       if (suppressedStatusUrlRef.current === trimmedStatusUrl) {
@@ -3187,7 +3434,7 @@ export function DashboardPage() {
     if (source.kind === "example") {
       void loadFromUrl(defaultGlobalStatusUrl);
     }
-  }, [exampleModeRequested, requestedStatusUrl, search.statusUrl, source.kind, source.label]);
+  }, [exampleModeRequested, requestedStatusUrl, search.statusUrl, search.view, source.kind, source.label]);
 
   useEffect(() => {
     if (search.statusUrl && source.kind === "example") {
@@ -3246,10 +3493,32 @@ export function DashboardPage() {
     );
   }
 
+  if (search.view === "all-machines") {
+    return (
+      <div className={theme === "dark" ? "dark" : ""} data-testid="all-machines-workspace">
+        <AllMachinesOverviewPage
+          error={allMachinesSelectionError}
+          now={Date.now()}
+          onOpenMachineGoal={selectAndOpenMachineGoal}
+          onRefresh={() => void allMachines.refreshAll()}
+          overview={allMachines.overview}
+          refreshing={allMachines.refreshing}
+          statusSourceControl={statusSourceControl}
+          theme="loopx"
+        />
+      </div>
+    );
+  }
+
   return (
     <PersonalGoalHome
+      assertMachineBinding={assertCommittedMachine}
       goalArchiveLoadState={goalArchiveLoadState}
       isLoading={isLoading}
+      key={source.kind === "url"
+        ? projectedStatusSourceForUrl(statusSourceCatalog, source.label, window.location.href).id
+        : "machine-selecting"}
+      machineBinding={committedMachine ? bindingToken(committedMachine) : undefined}
       onGoalActivationStateChange={(goalId, activationState) => {
         statusRequestFenceRef.current.projectionRevision += 1;
         setPayload((current) => withGoalActivationState(current, goalId, activationState));
@@ -3275,6 +3544,7 @@ export function DashboardPage() {
       progress={progress}
       remoteGoalControl={remoteGoalControl}
       rows={goalRows}
+      readOnly={machineWriteAuthority.kind !== "ready"}
       selectedGoalId={search.goalId}
       statusSourceControl={statusSourceControl}
       theme={theme}

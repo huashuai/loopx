@@ -1,4 +1,5 @@
 import type { WorkspaceLoadError } from "../../data/workspace-progressive-status";
+import type { MachineBindingToken } from "./machine-workspace-authority";
 export type WorkspaceGoalState =
   | "需修复"
   | "等你"
@@ -211,6 +212,7 @@ export type WorkspaceActionPreview = {
   goalId?: string;
   lifecycleOperation?: "stop" | "resume" | "delete";
   impact: string;
+  machineBinding?: MachineBindingToken;
   gate?: {
     kind: string;
     nextAction?: string;

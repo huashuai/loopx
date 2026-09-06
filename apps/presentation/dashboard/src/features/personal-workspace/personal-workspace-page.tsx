@@ -42,6 +42,7 @@ import type {
   WorkspaceTimelineItem,
   WorkspaceTodo,
 } from "./personal-workspace-model";
+import type { MachineBindingToken } from "./machine-workspace-authority";
 import { goalTitleFor, workspaceHomeLaneForGoal } from "./personal-workspace-model";
 import { routeWorkspaceInput } from "./personal-workspace-router";
 import { WorkspaceSettingsPage } from "./workspace-settings-page";
@@ -686,10 +687,12 @@ function readImageAttachment(file: File, t: WorkspaceTranslate): Promise<Workspa
 export function PersonalWorkspacePage({
   actionTarget,
   agents = [{ agentId: "codex", available: true, capability: "代码与项目执行", label: "Codex" }],
+  assertMachineBinding,
   callbacks = {},
   goalArchiveLoadState = { error: null, phase: "ready" },
   goalCreationEnabled = false,
   model,
+  machineBinding,
   readOnly = false,
   selectedAgentId: controlledAgentId,
   selectedGoalId: controlledGoalId,
@@ -697,10 +700,12 @@ export function PersonalWorkspacePage({
 }: {
   actionTarget?: ChatApiTarget;
   agents?: WorkspaceAgentOption[];
+  assertMachineBinding?: (binding: MachineBindingToken, goalId?: string) => void;
   callbacks?: PersonalWorkspaceCallbacks;
   goalArchiveLoadState?: WorkspaceGoalArchiveLoadState;
   goalCreationEnabled?: boolean;
   model: WorkspaceModel;
+  machineBinding?: MachineBindingToken;
   ownerLabel?: string;
   readOnly?: boolean;
   selectedAgentId?: string;
@@ -753,6 +758,9 @@ export function PersonalWorkspacePage({
   const selectedGoalId = controlledGoalId === undefined ? localGoalId : controlledGoalId;
   const selectedAgentId = controlledAgentId ?? localAgentId;
   const composerDraftKey = `${selectedGoalId ?? "manager"}:${selectedAgentId}`;
+  const machineBindingKey = machineBinding
+    ? `${machineBinding.sourceId}:${machineBinding.selectionRevision}:${machineBinding.registryRevision ?? ""}`
+    : "unbound";
   const composer = drafts[composerDraftKey] ?? "";
   useEffect(() => {
     setImageAttachments([]);
@@ -1001,7 +1009,7 @@ export function PersonalWorkspacePage({
         const restored = Object.fromEntries(stored
           .filter((proposal) => ["ready", "gated", "deferred", "applying"].includes(proposal.status))
           .map((proposal) => {
-            const projected = workspaceProposal(proposal, t);
+            const projected = { ...workspaceProposal(proposal, t), machineBinding };
             return [projected.previewId, projected];
           }));
         setProposals((current) => ({ ...current, ...restored }));
@@ -1010,7 +1018,7 @@ export function PersonalWorkspacePage({
         // The workspace remains usable when the optional local proposal store is unavailable.
       });
     return () => { cancelled = true; };
-  }, [actionTarget?.controlPlaneInstanceId, readOnly, selectedGoalId, t]);
+  }, [actionTarget?.controlPlaneInstanceId, machineBindingKey, readOnly, selectedGoalId, t]);
 
   async function createPreview(
     request: WorkspaceActionPreviewRequest,
@@ -1018,6 +1026,14 @@ export function PersonalWorkspacePage({
   ) {
     const remoteGoalWrite = remoteGoalCreateOnly && request.actionKind === "goal.create";
     if (readOnly && !remoteGoalWrite) throw new Error(t("source.readOnlyWriteError"));
+    const previewBinding = remoteGoalWrite ? undefined : machineBinding;
+    const previewGoalId = request.actionKind === "goal.create"
+      ? undefined
+      : typeof request.context.goal_id === "string"
+      ? request.context.goal_id
+      : selectedGoalId ?? undefined;
+    if (!remoteGoalWrite && assertMachineBinding && !previewBinding) throw new Error("machine_binding_stale");
+    if (previewBinding) assertMachineBinding?.(previewBinding, previewGoalId);
     let local: WorkspaceActionPreview;
     try {
       local = callbacks.onPreviewAction
@@ -1061,6 +1077,8 @@ export function PersonalWorkspacePage({
         workspaceCandidates,
       };
     }
+    if (previewBinding) assertMachineBinding?.(previewBinding, previewGoalId);
+    local = { ...local, machineBinding: previewBinding };
     setSessionProposalIds((current) => current.includes(local.previewId) ? current : [...current, local.previewId]);
     setProposals((current) => ({ ...current, [local.previewId]: local }));
     if (options.select !== false) setSelection({ item: local, kind: "proposal" });
@@ -1232,6 +1250,11 @@ export function PersonalWorkspacePage({
       setActionFeedback(t("source.readOnlyWriteError"));
       return;
     }
+    const proposalGoalId = proposal.actionKind === "goal.create" ? undefined : proposal.goalId;
+    if (!remoteGoalWrite) {
+      if (assertMachineBinding && !proposal.machineBinding) throw new Error("machine_binding_stale");
+      if (proposal.machineBinding) assertMachineBinding?.(proposal.machineBinding, proposalGoalId);
+    }
     const showDrawer = options.presentation !== "feedback";
     const inferredLifecycleChange = proposal.actionKind === "goal.lifecycle"
       && proposal.goalId
@@ -1253,6 +1276,9 @@ export function PersonalWorkspacePage({
       callbacks.onGoalActivationStateChange?.(lifecycleChange.goalId, lifecycleChange.next);
     }
     try {
+      if (!remoteGoalWrite && proposal.machineBinding) {
+        assertMachineBinding?.(proposal.machineBinding, proposalGoalId);
+      }
       if (callbacks.onApplyProposal) {
         await callbacks.onApplyProposal(proposal);
         const applied = { ...proposal, status: "applied" as const };
