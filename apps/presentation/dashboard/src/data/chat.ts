@@ -11,11 +11,18 @@ const configuredChatOrigin = String(import.meta.env?.VITE_LOOPX_CHAT_ORIGIN ?? "
   .trim()
   .replace(/\/+$/, "");
 
-function chatApiUrl(path: string) {
-  if (!configuredChatOrigin || /^https?:\/\//.test(path)) {
+export type ChatApiTarget = {
+  allowedActionKinds?: readonly TypedActionKind[];
+  controlPlaneInstanceId?: string;
+  origin?: string;
+};
+
+function chatApiUrl(path: string, target?: ChatApiTarget) {
+  const origin = target?.origin?.replace(/\/+$/, "") || configuredChatOrigin;
+  if (!origin || /^https?:\/\//.test(path)) {
     return path;
   }
-  return new URL(path, `${configuredChatOrigin}/`).toString();
+  return new URL(path, `${origin}/`).toString();
 }
 
 export {
@@ -99,6 +106,14 @@ export const chatStatusSchema = z.object({
 export const chatCapabilitiesSchema = z.object({
   ok: z.literal(true),
   schema_version: z.enum(["loopx_chat_capabilities_v0", "loopx_chat_capabilities_v1"]),
+  runtime_identity: z.object({
+    schema_version: z.literal("loopx_runtime_identity_v1"),
+    package_version: z.string().nullable(),
+    release_id: z.string().nullable(),
+    source_revision: z.string().nullable(),
+  }).optional(),
+  control_plane_instance_id: z.string().min(1).optional(),
+  remote_goal_creation: z.literal("preview_locked_instance_bound").optional(),
   agent_backend: z.string(),
   sandbox: z.string(),
   approval_policy: z.string(),
@@ -331,7 +346,13 @@ const typedActionEnvelopeSchema = z.object({
   proposal: typedActionProposalSchema,
 });
 
-export async function previewTypedAction(request: TypedActionPreviewRequest) {
+export async function previewTypedAction(request: TypedActionPreviewRequest, target?: ChatApiTarget) {
+  if (target?.allowedActionKinds && !target.allowedActionKinds.includes(request.actionKind)) {
+    throw new ChatApiError(
+      `Remote control target only permits ${target.allowedActionKinds.join(", ")}.`,
+      { error_code: "remote_action_not_allowed" },
+    );
+  }
   const payload = await requestJson<unknown>("/api/actions/preview", {
     method: "POST",
     body: JSON.stringify({
@@ -341,7 +362,7 @@ export async function previewTypedAction(request: TypedActionPreviewRequest) {
       normalized_parameters: request.normalizedParameters,
       summary: request.summary,
     }),
-  });
+  }, target);
   return typedActionEnvelopeSchema.parse(payload).proposal;
 }
 
@@ -367,10 +388,11 @@ export async function listTypedActions(filters: { contextKind?: string; goalId?:
   ).proposals;
 }
 
-export async function applyTypedAction(proposalId: string) {
+export async function applyTypedAction(proposalId: string, target?: ChatApiTarget) {
   const payload = await requestJson<unknown>(
     `/api/actions/${encodeURIComponent(proposalId)}/apply`,
     { method: "POST", body: "{}" },
+    target,
   );
   return z.object({
     ok: z.literal(true),
@@ -400,14 +422,17 @@ export async function transitionTypedAction(
   ).proposal;
 }
 
-async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
+async function requestJson<T>(url: string, init?: RequestInit, target?: ChatApiTarget): Promise<T> {
   let response: Response;
   try {
-    response = await fetch(chatApiUrl(url), {
+    response = await fetch(chatApiUrl(url, target), {
       cache: "no-store",
       ...init,
       headers: {
         "Content-Type": "application/json",
+        ...(target?.controlPlaneInstanceId
+          ? { "X-LoopX-Control-Plane-Instance": target.controlPlaneInstanceId }
+          : {}),
         ...init?.headers,
       },
     });
@@ -456,8 +481,8 @@ export async function fetchChatStatus() {
   return chatStatusSchema.parse(await requestJson<unknown>("/status.json"));
 }
 
-export async function fetchChatCapabilities() {
-  return chatCapabilitiesSchema.parse(await requestJson<unknown>("/api/chat/capabilities"));
+export async function fetchChatCapabilities(target?: ChatApiTarget) {
+  return chatCapabilitiesSchema.parse(await requestJson<unknown>("/api/chat/capabilities", undefined, target));
 }
 
 export async function recordProjectionExchange(options: {

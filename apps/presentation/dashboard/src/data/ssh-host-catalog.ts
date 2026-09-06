@@ -47,7 +47,7 @@ export function configuredSshTunnelDraft(hostAlias: string, localPortValue: stri
     return { error: "本地端口必须是 1024–65535 之间的整数。" } as const;
   }
   return {
-    command: `ssh -N -L ${localPort}:127.0.0.1:8766 ${alias}`,
+    command: `ssh -N -L ${localPort}:127.0.0.1:8767 ${alias}`,
     label: alias,
     statusUrl: `http://127.0.0.1:${localPort}/status.json`,
   } as const;
@@ -57,6 +57,7 @@ export function configuredSshTunnelDraft(hostAlias: string, localPortValue: stri
 export const defaultSshSourceEnsureUrl = "/api/ssh-source/ensure";
 
 export type EnsureSshSourceResult = {
+  control_url: string;
   ok: true;
   status_url: string;
   tunnel_required: boolean;

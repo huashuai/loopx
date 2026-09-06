@@ -4,6 +4,7 @@ export const defaultLocalStatusSourceUrl = "/status.json";
 export const statusSourceCatalogStorageKey = "loopx-status-source-catalog-v1";
 
 export type StatusSource = {
+  goalCreationRequested: boolean;
   id: string;
   kind: "local" | "ssh_tunnel";
   label: string;
@@ -18,7 +19,20 @@ export type StatusSourceCatalog = {
 
 export type StatusSourceStorage = Pick<Storage, "getItem" | "setItem">;
 
+export type RemoteGoalCreationConnectionState = "disabled" | "checking" | "ready" | "error";
+
+export function remoteGoalCreationControlPresentation(
+  requested: boolean,
+  state: RemoteGoalCreationConnectionState,
+) {
+  if (state === "checking") return { action: "wait", label: "checking" } as const;
+  if (requested && state === "ready") return { action: "disable", label: "ready" } as const;
+  if (requested && state === "error") return { action: "retry", label: "retry" } as const;
+  return { action: "enable", label: "enable" } as const;
+}
+
 export const localStatusSource: StatusSource = {
+  goalCreationRequested: false,
   id: "local",
   kind: "local",
   label: "本机",
@@ -33,7 +47,11 @@ type AddStatusSourceResult =
 type NormalizedTunnelUrl = { url: string } | { error: string };
 
 function normalizedTunnelUrl(value: string, baseHref: string): NormalizedTunnelUrl {
-  const resolved = resolveFrontstageOpsStatusUrl(value, baseHref);
+  const trimmed = value.trim();
+  const explicitValue = /^(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?(?:\/|$)/i.test(trimmed)
+    ? `http://${trimmed}`
+    : trimmed;
+  const resolved = resolveFrontstageOpsStatusUrl(explicitValue, baseHref);
   const source = resolved.source;
   if (!source || !source.isLoopback || source.isRelative) {
     return { error: "SSH 隧道来源必须使用显式的 localhost、127.0.0.1 或 ::1 URL。" };
@@ -64,6 +82,7 @@ function parseStoredSource(value: unknown, baseHref: string): StatusSource | nul
   const resolved = normalizedTunnelUrl(candidate.statusUrl, baseHref);
   if (!label || label.length > 48 || !("url" in resolved)) return null;
   return {
+    goalCreationRequested: candidate.goalCreationRequested === true,
     id: sourceId(resolved.url),
     kind: "ssh_tunnel",
     label,
@@ -116,6 +135,7 @@ export function addSshTunnelStatusSource(
     return { error: "这个状态 URL 已经在来源目录中。" };
   }
   const source: StatusSource = {
+    goalCreationRequested: false,
     id: sourceId(resolved.url),
     kind: "ssh_tunnel",
     label,
@@ -132,6 +152,19 @@ export function removeStatusSource(catalog: StatusSourceCatalog, sourceIdToRemov
   return {
     ...catalog,
     sources: catalog.sources.filter((source) => source.kind === "local" || source.id !== sourceIdToRemove),
+  };
+}
+
+export function setRemoteGoalCreationRequested(
+  catalog: StatusSourceCatalog,
+  sourceIdToUpdate: string,
+  requested: boolean,
+): StatusSourceCatalog {
+  return {
+    ...catalog,
+    sources: catalog.sources.map((source) => source.kind === "ssh_tunnel" && source.id === sourceIdToUpdate
+      ? { ...source, goalCreationRequested: requested }
+      : source),
   };
 }
 
@@ -154,6 +187,7 @@ export function projectedStatusSourceForUrl(catalog: StatusSourceCatalog, status
   const resolved = resolveFrontstageOpsStatusUrl(statusUrl, baseHref);
   if (resolved.source?.isRelative) return localStatusSource;
   return {
+    goalCreationRequested: false,
     id: "temporary",
     kind: "ssh_tunnel",
     label: "临时来源",
