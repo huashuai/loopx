@@ -134,6 +134,10 @@ function semanticProtectedActionPreview(
 import type { StatusSourceControl } from "../features/personal-workspace/status-source-switcher";
 import { ensureSshSource } from "../data/ssh-host-catalog";
 import {
+  connectRemoteGoalControl,
+  type ConnectedRemoteGoalControl,
+} from "../data/remote-goal-control";
+import {
   addSshTunnelStatusSource,
   defaultLocalStatusSourceUrl,
   loadStatusSourceCatalog,
@@ -142,6 +146,7 @@ import {
   projectedStatusSourceForUrl,
   removeStatusSource,
   saveStatusSourceCatalog,
+  setRemoteGoalCreationRequested,
   type StatusSource,
 } from "../data/status-source-catalog";
 
@@ -1332,6 +1337,7 @@ function PersonalGoalHome({
   onRetryGoalArchive,
   payload,
   progress,
+  remoteGoalControl,
   rows,
   selectedGoalId,
   statusSourceControl,
@@ -1348,6 +1354,7 @@ function PersonalGoalHome({
   onRetryGoalArchive: () => void | Promise<void>;
   payload: StatusPayload;
   progress: WorkspaceProgress | null;
+  remoteGoalControl: ConnectedRemoteGoalControl | null;
   rows: GoalDirectoryRow[];
   selectedGoalId: string;
   statusSourceControl: StatusSourceControl;
@@ -1558,7 +1565,7 @@ function PersonalGoalHome({
 
   useEffect(() => {
     if (readOnly) {
-      setRuntimeAgents([]);
+      setRuntimeAgents(remoteGoalControl?.capabilities.adapters ?? []);
       setGoalSubagentConfigurationEnabled(false);
       return;
     }
@@ -1579,7 +1586,7 @@ function PersonalGoalHome({
     return () => {
       cancelled = true;
     };
-  }, [readOnly]);
+  }, [readOnly, remoteGoalControl]);
 
   useEffect(() => {
     try {
@@ -2543,6 +2550,7 @@ function PersonalGoalHome({
     <div className={theme === "dark" ? "dark" : ""} data-testid="personal-goal-home">
       {executionDiscoveryError ? <p role="status" className="m-0 bg-amber-50 px-4 py-2 text-sm text-amber-900">{t(executionDiscoveryError === "partial" ? "runs.discoveryPartial" : "runs.discoveryOffline")}</p> : null}
       <PersonalWorkspacePage
+        actionTarget={remoteGoalControl?.target}
         agents={agentOptions.map((agent) => ({
           adapterKind: agent.adapterKind,
           agentId: agent.agentId,
@@ -2709,6 +2717,11 @@ function PersonalGoalHome({
           onStartNewRunSession: startNewManagerSession,
         }}
         goalArchiveLoadState={goalArchiveLoadState}
+        goalCreationEnabled={Boolean(
+          remoteGoalControl
+          && remoteGoalControl.sourceId === statusSourceControl.activeSource.id
+          && statusSourceControl.remoteGoalCreation?.state === "ready"
+        )}
         model={workspaceModel}
         readOnly={readOnly}
         selectedAgentId={selectedAgent.agentId}
@@ -2827,6 +2840,12 @@ export function DashboardPage() {
     search.statusUrl.trim() || null,
   );
   const [exampleModeRequested, setExampleModeRequested] = useState(false);
+  const [remoteGoalControl, setRemoteGoalControl] = useState<ConnectedRemoteGoalControl | null>(null);
+  const [remoteGoalControlStatus, setRemoteGoalControlStatus] = useState<{
+    errorMessage: string | null;
+    sourceId: string | null;
+    state: "disabled" | "checking" | "ready" | "error";
+  }>({ errorMessage: null, sourceId: null, state: "disabled" });
   const suppressedStatusUrlRef = useRef<string | null>(null);
   const statusRequestFenceRef = useRef<StatusRequestFence>(
     createStatusRequestFence(search.statusUrl.trim() || null),
@@ -2843,6 +2862,51 @@ export function DashboardPage() {
     loadedStatusUrl,
     window.location.href,
   );
+
+  useEffect(() => {
+    let cancelled = false;
+    if (activeStatusSource.kind !== "ssh_tunnel" || !activeStatusSource.goalCreationRequested) {
+      setRemoteGoalControl(null);
+      setRemoteGoalControlStatus({ errorMessage: null, sourceId: activeStatusSource.id, state: "disabled" });
+      return () => { cancelled = true; };
+    }
+    if (isLoading) {
+      setRemoteGoalControl(null);
+      setRemoteGoalControlStatus({ errorMessage: null, sourceId: activeStatusSource.id, state: "checking" });
+      return () => { cancelled = true; };
+    }
+    if (requestFailed) {
+      setRemoteGoalControl(null);
+      setRemoteGoalControlStatus({ errorMessage: loadError, sourceId: activeStatusSource.id, state: "error" });
+      return () => { cancelled = true; };
+    }
+    setRemoteGoalControl(null);
+    setRemoteGoalControlStatus({ errorMessage: null, sourceId: activeStatusSource.id, state: "checking" });
+    void connectRemoteGoalControl(activeStatusSource)
+      .then((connection) => {
+        if (cancelled) return;
+        setRemoteGoalControl(connection);
+        setRemoteGoalControlStatus({ errorMessage: null, sourceId: activeStatusSource.id, state: "ready" });
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setRemoteGoalControl(null);
+        setRemoteGoalControlStatus({
+          errorMessage: error instanceof Error ? error.message : String(error),
+          sourceId: activeStatusSource.id,
+          state: "error",
+        });
+      });
+    return () => { cancelled = true; };
+  }, [
+    activeStatusSource.goalCreationRequested,
+    activeStatusSource.id,
+    activeStatusSource.kind,
+    activeStatusSource.statusUrl,
+    isLoading,
+    loadError,
+    requestFailed,
+  ]);
 
   const statusRequestActive = source.kind === "example"
     && !exampleModeRequested;
@@ -3066,6 +3130,32 @@ export function DashboardPage() {
       if (!nextSource) return;
       selectStatusSource(nextSource, { ensureTunnel: nextSource.kind === "ssh_tunnel" });
     },
+    remoteGoalCreation: activeStatusSource.kind === "ssh_tunnel" ? {
+      errorMessage: !requestFailed && remoteGoalControlStatus.sourceId === activeStatusSource.id
+        ? remoteGoalControlStatus.errorMessage
+        : null,
+      onToggle: () => {
+        if (activeStatusSource.goalCreationRequested
+          && remoteGoalControlStatus.sourceId === activeStatusSource.id
+          && remoteGoalControlStatus.state === "error") {
+          selectStatusSource(activeStatusSource, { ensureTunnel: true });
+          return;
+        }
+        const requested = !activeStatusSource.goalCreationRequested;
+        const nextCatalog = setRemoteGoalCreationRequested(
+          statusSourceCatalog,
+          activeStatusSource.id,
+          requested,
+        );
+        persistStatusSourceCatalog(nextCatalog);
+        const nextSource = nextCatalog.sources.find((candidate) => candidate.id === activeStatusSource.id);
+        if (nextSource) selectStatusSource(nextSource, { ensureTunnel: requested });
+      },
+      requested: activeStatusSource.goalCreationRequested,
+      state: remoteGoalControlStatus.sourceId === activeStatusSource.id
+        ? remoteGoalControlStatus.state
+        : activeStatusSource.goalCreationRequested ? "checking" : "disabled",
+    } : undefined,
     sources: activeStatusSource.id === "temporary"
       ? [...statusSourceCatalog.sources, activeStatusSource]
       : statusSourceCatalog.sources,
@@ -3183,6 +3273,7 @@ export function DashboardPage() {
       onRefresh={() => loadFromUrl(source.kind === "url" ? source.label : (statusUrl || defaultGlobalStatusUrl), { retryOnly: Boolean(progress && Object.keys(progress.errors).length) })}
       payload={payload}
       progress={progress}
+      remoteGoalControl={remoteGoalControl}
       rows={goalRows}
       selectedGoalId={search.goalId}
       statusSourceControl={statusSourceControl}

@@ -13,6 +13,7 @@ import {
   previewTypedAction,
   setupGoalChannel,
   transitionTypedAction,
+  type ChatApiTarget,
   type GoalRepositoryContext,
   type LarkGoalConnection,
   type TypedActionProposal,
@@ -683,18 +684,22 @@ function readImageAttachment(file: File, t: WorkspaceTranslate): Promise<Workspa
 }
 
 export function PersonalWorkspacePage({
+  actionTarget,
   agents = [{ agentId: "codex", available: true, capability: "代码与项目执行", label: "Codex" }],
   callbacks = {},
   goalArchiveLoadState = { error: null, phase: "ready" },
+  goalCreationEnabled = false,
   model,
   readOnly = false,
   selectedAgentId: controlledAgentId,
   selectedGoalId: controlledGoalId,
   statusSourceControl,
 }: {
+  actionTarget?: ChatApiTarget;
   agents?: WorkspaceAgentOption[];
   callbacks?: PersonalWorkspaceCallbacks;
   goalArchiveLoadState?: WorkspaceGoalArchiveLoadState;
+  goalCreationEnabled?: boolean;
   model: WorkspaceModel;
   ownerLabel?: string;
   readOnly?: boolean;
@@ -733,6 +738,7 @@ export function PersonalWorkspacePage({
   const [refreshState, setRefreshState] = useState<"idle" | "loading" | "done" | "error">("idle");
   const [sessionProposalIds, setSessionProposalIds] = useState<string[]>([]);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const remoteGoalCreateOnly = readOnly && goalCreationEnabled && Boolean(actionTarget);
   const [theme, setTheme] = useState<WorkspaceTheme>(readWorkspaceTheme);
   const [goalContexts, setGoalContexts] = useState<Record<string, GoalRepositoryContext>>({});
   const [larkConnections, setLarkConnections] = useState<LarkGoalConnection[]>([]);
@@ -1004,18 +1010,19 @@ export function PersonalWorkspacePage({
         // The workspace remains usable when the optional local proposal store is unavailable.
       });
     return () => { cancelled = true; };
-  }, [readOnly, selectedGoalId, t]);
+  }, [actionTarget?.controlPlaneInstanceId, readOnly, selectedGoalId, t]);
 
   async function createPreview(
     request: WorkspaceActionPreviewRequest,
     options: { select?: boolean } = {},
   ) {
-    if (readOnly) throw new Error(t("source.readOnlyWriteError"));
+    const remoteGoalWrite = remoteGoalCreateOnly && request.actionKind === "goal.create";
+    if (readOnly && !remoteGoalWrite) throw new Error(t("source.readOnlyWriteError"));
     let local: WorkspaceActionPreview;
     try {
       local = callbacks.onPreviewAction
         ? await callbacks.onPreviewAction(request)
-        : workspaceProposal(await previewTypedAction(request), t);
+        : workspaceProposal(await previewTypedAction(request, remoteGoalWrite ? actionTarget : undefined), t);
     } catch (error) {
       if (!(error instanceof ChatApiError) || error.payload.error_code !== "action_preview_gate") throw error;
       const rawGate = error.payload.gate && typeof error.payload.gate === "object"
@@ -1220,6 +1227,11 @@ export function PersonalWorkspacePage({
       presentation?: "drawer" | "feedback";
     } = {},
   ) {
+    const remoteGoalWrite = remoteGoalCreateOnly && proposal.actionKind === "goal.create";
+    if (readOnly && !remoteGoalWrite) {
+      setActionFeedback(t("source.readOnlyWriteError"));
+      return;
+    }
     const showDrawer = options.presentation !== "feedback";
     const inferredLifecycleChange = proposal.actionKind === "goal.lifecycle"
       && proposal.goalId
@@ -1259,7 +1271,7 @@ export function PersonalWorkspacePage({
         }
         return;
       }
-      const result = await applyTypedAction(proposal.previewId);
+      const result = await applyTypedAction(proposal.previewId, remoteGoalWrite ? actionTarget : undefined);
       const applied = workspaceProposal(result.proposal, t);
       setProposals((current) => ({ ...current, [proposal.previewId]: applied }));
       if (showDrawer) setSelection({ item: applied, kind: "proposal" });
@@ -1275,6 +1287,10 @@ export function PersonalWorkspacePage({
         return;
       }
       setActionFeedback(t("feedback.completed", { title: applied.title }));
+      if (remoteGoalWrite && applied.goalId) {
+        await callbacks.onRefresh?.();
+        selectGoal(applied.goalId);
+      }
       // Keep the success receipt visible for reviewed actions. Direct actions
       // surface the same result through the persistent feedback receipt.
       if (applied.actionKind === "todo.create") {
@@ -1426,6 +1442,7 @@ export function PersonalWorkspacePage({
     },
   };
   const effectiveDrawerCallbacks: PersonalWorkspaceCallbacks = readOnly ? {
+    ...(remoteGoalCreateOnly ? { onApplyProposal: drawerCallbacks.onApplyProposal } : {}),
     onOpenGoal: drawerCallbacks.onOpenGoal,
     onOpenGoalView: drawerCallbacks.onOpenGoalView,
     onOpenOutput: drawerCallbacks.onOpenOutput,
@@ -1476,6 +1493,11 @@ export function PersonalWorkspacePage({
         goalId: selectedGoalId,
         todos: (selectedGoal?.agentTodos ?? []).map((todo) => ({ text: todo.text, todoId: todo.todoId })),
       });
+      if (remoteGoalCreateOnly && intentRoute.actionKind !== "goal.create") {
+        setComposer(message);
+        setActionFeedback(t("source.remoteGoalOnlyError"));
+        return;
+      }
       if (intentRoute.route === "clarify") {
         setComposer(message);
         let clarification = t("composer.clarifySingleAction");
@@ -1711,7 +1733,7 @@ export function PersonalWorkspacePage({
         }
         setTaskInspectorExpanded(false);
         setSelection(null);
-      }} onToggleInspectorSize={() => setTaskInspectorExpanded((current) => !current)} readOnly={readOnly} runs={items.flatMap((item) => item.kind === "run" ? [item.run] : [])} selection={drawerSelection} /> : null}
+      }} onToggleInspectorSize={() => setTaskInspectorExpanded((current) => !current)} readOnly={readOnly} remoteGoalCreationEnabled={remoteGoalCreateOnly} runs={items.flatMap((item) => item.kind === "run" ? [item.run] : [])} selection={drawerSelection} /> : null}
       drawerMode={drawerSelection?.kind === "todo" ? (taskInspectorExpanded ? "inspector-full" : "inspector") : "panel"}
       drawerOpen={drawerSelection !== null}
       mobileSidebarOpen={mobileSidebarOpen}
@@ -1815,9 +1837,12 @@ export function PersonalWorkspacePage({
             )}
           </div>
           <div className="personal-composer-wrap">
-            {readOnly ? (
+            {readOnly && !(remoteGoalCreateOnly && !selectedGoal) ? (
               <div className="personal-read-only-notice"><strong>{t("source.readOnlyNoticeTitle")}</strong><span>{t("source.readOnlyNoticeDescription")}</span></div>
             ) : <>
+            {remoteGoalCreateOnly ? (
+              <div className="personal-read-only-notice"><strong>{t("source.remoteGoalOnlyTitle")}</strong><span>{t("source.remoteGoalOnlyDescription")}</span></div>
+            ) : null}
             {!selectedGoal && !managerChatOpen && managerConversationReceiptVisible && managerMessages.length ? (
               <ManagerConversationTray
                 messages={managerMessages}
@@ -1858,7 +1883,11 @@ export function PersonalWorkspacePage({
                   : t("composer.goalMessageHint", { agent: selectedAgentLabel })
                 : t("composer.managerMessageHint")}
             </p>
-            {selectedGoal ? (
+            {remoteGoalCreateOnly ? (
+              <div className="personal-quick-prompts">
+                <button aria-label={t("composer.createGoal")} className="is-draft" onClick={requestGoalCreate} title={t("composer.createGoalHint")} type="button"><Plus size={13} /><span>{t("composer.createGoal")}</span><small className="personal-prompt-subtle">{t("composer.draft")}</small></button>
+              </div>
+            ) : selectedGoal ? (
               <div className="personal-quick-prompts">
                 <button aria-label={t("composer.nextAction")} className="is-draft" onClick={() => fillQuickPrompt(t("composer.nextActionPrompt"))} title={t("composer.prepareDraft")} type="button"><MessageCircleQuestion size={13} /><span>{t("composer.nextAction")}</span><small className="personal-prompt-subtle">{t("composer.draft")}</small></button>
                 <button className="is-immediate" disabled={sending} onClick={() => void sendMessage(t("composer.agentProgressPrompt"))} title={t("composer.immediate")} type="button"><Send size={13} /><span>{t("composer.agentProgress")}</span><em className="personal-prompt-badge">{t("composer.immediate")}</em></button>
@@ -1880,7 +1909,7 @@ export function PersonalWorkspacePage({
             ))}</div> : null}
             {imageAttachmentError ? <p className="personal-composer-error" role="alert">{imageAttachmentError}</p> : null}
             <div
-              className="personal-channel-composer"
+              className={remoteGoalCreateOnly ? "personal-channel-composer is-goal-create-only" : "personal-channel-composer"}
               onDragOver={(event) => {
                 if ([...event.dataTransfer.items].some((item) => item.kind === "file" && item.type.startsWith("image/"))) {
                   event.preventDefault();
@@ -1894,7 +1923,7 @@ export function PersonalWorkspacePage({
               }}
             >
               <span><Bot size={17} />{agents.find((agent) => agent.agentId === selectedAgentId)?.label ?? selectedAgentId}</span>
-              <button
+              {!remoteGoalCreateOnly ? <button
                 aria-label={t("composer.addImage")}
                 className="personal-composer-attach"
                 disabled={sending || imageAttachments.length >= maxImageAttachmentCount}
@@ -1903,12 +1932,19 @@ export function PersonalWorkspacePage({
                 type="button"
               >
                 <Paperclip size={17} />
-              </button>
-              <input accept="image/png,image/jpeg,image/webp,image/gif" aria-label={t("composer.imagePicker")} className="personal-composer-file-input" disabled={sending || imageAttachments.length >= maxImageAttachmentCount} multiple onChange={(event) => void selectImages(event.target.files)} ref={imageInputRef} type="file" />
+              </button> : null}
+              {!remoteGoalCreateOnly ? <input accept="image/png,image/jpeg,image/webp,image/gif" aria-label={t("composer.imagePicker")} className="personal-composer-file-input" disabled={sending || imageAttachments.length >= maxImageAttachmentCount} multiple onChange={(event) => void selectImages(event.target.files)} ref={imageInputRef} type="file" /> : null}
               <textarea
                 aria-label={t("composer.sendMessage")}
                 onChange={(event) => setComposer(event.target.value)}
                 onKeyDown={(event) => {
+                  if (remoteGoalCreateOnly) {
+                    if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && !event.nativeEvent.isComposing) {
+                      event.preventDefault();
+                      void sendMessage();
+                    }
+                    return;
+                  }
                   if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
                     event.preventDefault();
                     void sendMessage();
@@ -1917,7 +1953,7 @@ export function PersonalWorkspacePage({
                 onPaste={handleComposerPaste}
                 placeholder={selectedGoal ? t("composer.goalPlaceholder", { goal: selectedGoal.title }) : t("composer.managerPlaceholder")}
                 ref={composerRef}
-                rows={1}
+                rows={remoteGoalCreateOnly ? 7 : 1}
                 value={composer}
               />
               <button aria-label={goalDraftActive ? t("composer.createGoal") : t("composer.send")} disabled={(!composer.trim() && imageAttachments.length === 0) || sending} onClick={() => void sendMessage()} title={goalDraftActive ? t("composer.createGoalHint") : t("composer.sendMessageHint")} type="button"><Send size={18} /></button>
@@ -1933,7 +1969,7 @@ export function PersonalWorkspacePage({
           goals={workspaceGoals}
           goalArchiveLoadState={goalArchiveLoadState}
           lifecycleBusyGoalIds={lifecycleBusyGoalIds}
-          onRequestGoalCreate={readOnly ? undefined : requestGoalCreate}
+          onRequestGoalCreate={readOnly && !remoteGoalCreateOnly ? undefined : requestGoalCreate}
           onRequestGoalLifecycle={readOnly ? undefined : (goal, operation) => void requestGoalLifecycle(goal, operation)}
           onRetryGoalArchive={callbacks.onRetryGoalArchive || callbacks.onRefresh
             ? () => void (callbacks.onRetryGoalArchive ?? callbacks.onRefresh)?.()

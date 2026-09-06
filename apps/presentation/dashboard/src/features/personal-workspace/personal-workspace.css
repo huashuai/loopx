@@ -58,6 +58,9 @@
 .personal-status-source-meta > span.is-error i { background: #dd5b47; }
 .personal-status-source-meta small { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .personal-status-source-meta button { margin-left: auto; width: 22px; height: 22px; color: var(--pw-faint); }
+.personal-status-source-meta button.personal-status-source-goal-toggle { display: inline-flex; width: auto; min-width: 44px; margin-left: auto; padding: 0 6px; border: 1px solid var(--pw-line-strong); color: var(--pw-blue-ink); font-size: 9.5px; font-weight: 650; }
+.personal-status-source-meta button.personal-status-source-goal-toggle + button { margin-left: 0; }
+.personal-status-source-meta button.personal-status-source-goal-toggle:disabled { cursor: wait; opacity: .6; }
 .personal-status-source-error { margin: 0 3px; color: var(--pw-red); font-size: 10px; line-height: 1.4; overflow-wrap: anywhere; }
 .personal-status-source-form { position: absolute; z-index: 12; top: calc(100% - 4px); left: 12px; right: 12px; display: grid; gap: 10px; padding: 13px; border: 1px solid var(--pw-line-strong); border-radius: 12px; background: #fff; box-shadow: 0 12px 32px rgb(30 28 20 / 14%); }
 .personal-status-source-form > header { display: flex; align-items: center; justify-content: space-between; font-size: 12.5px; }
@@ -888,9 +891,13 @@
 .personal-goal-draft-status { display: flex; align-items: center; gap: 8px; margin-bottom: 9px; padding: 8px 11px; border: 1px solid #cfd9f5; border-radius: 10px; background: #f5f7ff; color: var(--pw-muted); font-size: 11px; }
 .personal-goal-draft-status strong { color: var(--pw-text); }
 .personal-channel-composer { display: grid; grid-template-columns: auto 36px minmax(0, 1fr) 40px; align-items: center; min-height: 56px; padding: 7px 7px 7px 14px; border: 1px solid var(--pw-line-strong); border-radius: 16px; background: #fff; box-shadow: 0 2px 10px rgb(30 28 20 / 7%); transition: border-color .15s ease, box-shadow .15s ease; }
+.personal-channel-composer.is-goal-create-only { grid-template-columns: auto minmax(0, 1fr) 40px; align-items: start; }
 .personal-channel-composer:focus-within { border-color: var(--pw-blue); box-shadow: 0 0 0 3px rgb(47 102 233 / 13%), 0 2px 10px rgb(30 28 20 / 7%); }
 .personal-channel-composer > span { display: flex; align-items: center; gap: 7px; padding-right: 12px; color: #535b68; font-size: 12.5px; font-weight: 650; }
 .personal-channel-composer textarea { width: 100%; max-height: 120px; padding: 9px 12px; resize: none; border: 0; border-left: 1px solid var(--pw-line); outline: 0; background: transparent; color: inherit; font: inherit; line-height: 1.4; }
+.personal-channel-composer.is-goal-create-only > span { padding-top: 10px; }
+.personal-channel-composer.is-goal-create-only textarea { min-height: 132px; max-height: 240px; font-size: 13px; line-height: 1.55; }
+.personal-channel-composer.is-goal-create-only > button { align-self: end; }
 .personal-channel-composer > button, .personal-correction-composer button { display: grid; place-items: center; width: 40px; height: 40px; border: 0; border-radius: 12px; background: var(--pw-blue); color: #fff; cursor: pointer; box-shadow: 0 2px 6px rgb(47 102 233 / 32%); }
 .personal-channel-composer > button:hover { background: var(--pw-blue-ink); }
 .personal-channel-composer > button:disabled, .personal-correction-composer button:disabled { opacity: .4; cursor: default; box-shadow: none; }
@@ -1172,6 +1179,7 @@
   .personal-timeline-row > time, .personal-timeline-row > .personal-row-status { display: none; }
   .personal-timeline-row .personal-priority-dot { display: none; }
   .personal-channel-composer { grid-template-columns: 40px 36px minmax(0, 1fr) 40px; }
+  .personal-channel-composer.is-goal-create-only { grid-template-columns: 40px minmax(0, 1fr) 40px; }
   .personal-task-chat-receipt { grid-template-columns: 32px minmax(0, 1fr); padding: 11px; }
   .personal-task-lane-filter { align-items: stretch; flex-direction: column; gap: 8px; }
   .personal-task-lane-filter label, .personal-task-lane-filter select { width: 100%; max-width: none; }

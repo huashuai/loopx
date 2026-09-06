@@ -28,6 +28,11 @@ from .chat_goal_subagent_api import (
     add_goal_subagent_capability,
     add_goal_subagent_routes,
 )
+from .chat_http_policy import (
+    CONTROL_PLANE_INSTANCE_HEADER, chat_cors_response_headers,
+    control_plane_instance_mismatch, control_plane_instance_mismatch_payload,
+    new_control_plane_instance_id,
+)
 from .chat_status_api import ChatStatusRequestMixin
 from .chat_runtime import ChatRuntimeController, TERMINAL_TURN_STATES
 from .chat_ssh_source_api import SSH_SOURCE_ENSURE_PATH, SshSourceRequestMixin
@@ -72,7 +77,6 @@ from .release_manifest import release_runtime_identity
 from .registry import registry_goals, resolve_state_file
 from .state_projection import build_active_state_structured_projection
 from .status_server import (
-    cors_response_headers,
     is_loopback_host,
     is_loopback_origin,
 )
@@ -108,13 +112,6 @@ CHAT_LARK_CHATS_PATH = "/api/chat/lark/chats"
 CHAT_LARK_CONNECTIONS_PATH = "/api/chat/lark/connections"
 CHAT_ACTIONS_PATH = "/api/actions"
 CHAT_ACTION_PREVIEW_PATH = f"{CHAT_ACTIONS_PATH}/preview"
-
-
-def chat_cors_response_headers(origin: str | None) -> dict[str, str]:
-    headers = cors_response_headers(origin)
-    if headers:
-        headers["Access-Control-Allow-Methods"] = "GET, POST, DELETE, OPTIONS"
-    return headers
 
 
 def default_chat_assets_dir() -> Path:
@@ -422,6 +419,7 @@ class ChatHTTPServer(ThreadingHTTPServer):
     lark_goal_topic_runtime: LarkGoalTopicRuntimeService
     ssh_config_path: Path | None
     goal_subagent_configuration_enabled: bool
+    control_plane_instance_id: str
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
@@ -1276,6 +1274,8 @@ class ChatRequestHandler(
                 "ok": True,
                 "schema_version": "loopx_chat_capabilities_v1",
                 "runtime_identity": release_runtime_identity(),
+                "control_plane_instance_id": self.server.control_plane_instance_id,
+                "remote_goal_creation": "preview_locked_instance_bound",
                 "agent_backend": "multi_adapter",
                 "sandbox": "read-only",
                 "approval_policy": "never",
@@ -1337,6 +1337,10 @@ class ChatRequestHandler(
 
     def do_POST(self) -> None:
         if not self._require_loopback_origin():
+            return
+        requested_instance = self.headers.get(CONTROL_PLANE_INSTANCE_HEADER)
+        if control_plane_instance_mismatch(requested_instance, self.server.control_plane_instance_id):
+            self._send_json(control_plane_instance_mismatch_payload(), status=409)
             return
         path = urlparse(self.path).path
         post_dispatch = {
@@ -1440,6 +1444,7 @@ def serve_chat(
         explicit=lark_cli_bin,
     )
     server = ChatHTTPServer((host, port), ChatRequestHandler)
+    server.control_plane_instance_id = new_control_plane_instance_id()
     server.registry_path = resolved_registry_path
     server.runtime_root = runtime_root
     server.runtime_root_override = resolved_runtime_root_override

@@ -1,7 +1,11 @@
 import { Copy, Plus, RotateCw, Server, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
-import type { StatusSource } from "../../data/status-source-catalog";
+import {
+  remoteGoalCreationControlPresentation,
+  type RemoteGoalCreationConnectionState,
+  type StatusSource,
+} from "../../data/status-source-catalog";
 import {
   configuredSshTunnelDraft,
   fetchConfiguredSshHosts,
@@ -19,6 +23,12 @@ export type StatusSourceControl = {
   onAdd: (input: { ensureTunnel?: boolean; label: string; statusUrl: string }) => { error?: string };
   onRemove: (sourceId: string) => void;
   onSelect: (sourceId: string) => void;
+  remoteGoalCreation?: {
+    errorMessage?: string | null;
+    onToggle: () => void;
+    requested: boolean;
+    state: RemoteGoalCreationConnectionState;
+  };
   sources: StatusSource[];
 };
 
@@ -29,6 +39,7 @@ export function StatusSourceSwitcher({
   onAdd,
   onRemove,
   onSelect,
+  remoteGoalCreation,
   sources,
 }: StatusSourceControl) {
   const { t } = useWorkspaceI18n();
@@ -60,6 +71,9 @@ export function StatusSourceSwitcher({
     }
     return configuredSshTunnelDraft(hostAlias, localPort);
   }, [configuredHosts, hostAlias, localPort, t]);
+  const remoteGoalPresentation = remoteGoalCreation
+    ? remoteGoalCreationControlPresentation(remoteGoalCreation.requested, remoteGoalCreation.state)
+    : null;
 
   useEffect(() => {
     void loadConfiguredHosts();
@@ -184,11 +198,32 @@ export function StatusSourceSwitcher({
       />
       <div className="personal-status-source-meta">
         <span className={`is-${connectionState}`}><i />{connectionState === "loading" ? t("source.connecting") : connectionState === "error" ? t("source.notAvailable") : t("source.connected")}</span>
-        <small>{activeSource.readOnly ? t("source.readOnly") : t("source.localInteractive")}</small>
+        <small>{remoteGoalCreation?.state === "ready"
+          ? t("source.remoteGoalReady")
+          : activeSource.readOnly ? t("source.readOnly") : t("source.localInteractive")}</small>
+        {activeSource.kind === "ssh_tunnel" && remoteGoalCreation ? (
+          <button
+            aria-label={remoteGoalPresentation?.action === "disable"
+              ? t("source.disableRemoteGoal")
+              : remoteGoalPresentation?.action === "retry" ? t("source.retryRemoteGoal") : t("source.enableRemoteGoal")}
+            className="personal-status-source-goal-toggle"
+            disabled={remoteGoalCreation.state === "checking"}
+            onClick={remoteGoalCreation.onToggle}
+            title={remoteGoalPresentation?.action === "disable"
+              ? t("source.disableRemoteGoal")
+              : remoteGoalPresentation?.action === "retry" ? t("source.retryRemoteGoal") : t("source.enableRemoteGoal")}
+            type="button"
+          >{remoteGoalPresentation?.label === "checking" ? "…"
+            : remoteGoalPresentation?.label === "ready" ? "Goal ✓"
+              : remoteGoalPresentation?.label === "retry" ? t("source.retryRemoteGoalShort") : "+ Goal"}</button>
+        ) : null}
         {activeSource.kind === "ssh_tunnel" ? (
           <button aria-label={t("source.remove", { source: activeSource.label })} onClick={() => onRemove(activeSource.id)} title={t("source.removeCurrent")} type="button"><Trash2 size={12} /></button>
         ) : null}
       </div>
+      {remoteGoalCreation?.state === "error" && remoteGoalCreation.errorMessage
+        ? <p className="personal-status-source-error" role="alert">{remoteGoalCreation.errorMessage}</p>
+        : null}
       {errorMessage ? <p className="personal-status-source-error" role="alert">{errorMessage}</p> : null}
       {adding ? (
         <div className="personal-status-source-form">
@@ -220,7 +255,7 @@ export function StatusSourceSwitcher({
             <>
               <label><span>{t("source.name")}</span><input autoFocus maxLength={48} onChange={(event) => setLabel(event.target.value)} placeholder={t("source.namePlaceholder")} value={label} /></label>
               <label><span>{t("source.statusUrl")}</span><input onChange={(event) => setStatusUrl(event.target.value)} placeholder="http://127.0.0.1:8876/status.json" value={statusUrl} /></label>
-              <p><code>ssh -N -L 8876:127.0.0.1:8766 &lt;host&gt;</code></p>
+              <p><code>ssh -N -L 8876:127.0.0.1:8767 &lt;host&gt;</code></p>
               <p>{t("source.manualDescription")}</p>
               <button className="personal-status-source-add" onClick={submitManual} type="button">{t("source.addConfigured")}</button>
             </>
