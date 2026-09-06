@@ -65,7 +65,15 @@ export async function launchBrowser(chromium) {
   if (!executablePath) {
     throw new Error("chrome-headless-shell not found; set LOOPX_CHROME_HEADLESS_SHELL");
   }
-  return chromium.launch({ executablePath, headless: true });
+  try {
+    return await chromium.launch({ executablePath, headless: true });
+  } catch (error) {
+    const installedChrome = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+    if (existsSync(installedChrome)) {
+      return chromium.launch({ channel: "chrome", headless: true });
+    }
+    throw error;
+  }
 }
 
 export function startViteDashboardServer({ dashboardDir, port }) {

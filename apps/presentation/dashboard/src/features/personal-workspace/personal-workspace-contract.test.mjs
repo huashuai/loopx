@@ -20,12 +20,35 @@ const capabilityWorkbench = source("./capability-workbench.tsx");
 const i18n = source("./i18n.tsx");
 const workspaceTheme = source("./workspace-theme.ts");
 const statusSourceSwitcher = source("./status-source-switcher.tsx");
+const allMachines = source("./all-machines-overview.tsx");
 const workspaceSettings = source("./workspace-settings-page.tsx");
 const styles = source("./personal-workspace.css");
 const dashboard = source("../../views/dashboard-page.tsx");
 const tasks = source("./goal-tasks-view.tsx");
 const status = source("../../data/status.ts");
 const chatData = source("../../data/chat.ts");
+const appRouter = source("../../router.tsx");
+
+assert.match(appRouter, /view:\s*z\.enum\(\["machine", "all-machines"\]\)/, "All machines has an explicit route and does not replace the default machine view");
+assert.match(statusSourceSwitcher, /all-machines/, "The source control exposes All machines without persisting a synthetic StatusSource");
+assert.match(allMachines, /all-machines-title/, "The overview has one accessible first-screen heading");
+assert.match(allMachines, /allMachines\.readOnlyDescription/, "The overview states its read-only authority boundary");
+assert.match(allMachines, /overview\.machines\.map/, "Every registered source gets a health and freshness row");
+assert.match(allMachines, /overview\.goals\.map/, "Ongoing Goals are rendered from the source-scoped aggregate");
+assert.match(allMachines, /row\.ref\.sourceLabel/, "Every Goal keeps its visible machine namespace");
+for (const forbidden of ["onRequestGoalCreate", "applyTypedAction", "previewTypedAction", "sendChatTurn"]) {
+  assert.doesNotMatch(allMachines, new RegExp(forbidden), `The overview does not expose ${forbidden}`);
+}
+assert.match(dashboard, /search\.view === "all-machines"/, "Dashboard orchestration mounts the aggregate only for the explicit view");
+assert.match(dashboard, /if \(search\.view !== "machine"\) return;/, "The machine loader cannot hijack the explicit All machines route");
+assert.match(dashboard, /selectAndOpenMachineGoal/, "A source-scoped Goal enters its owning machine through revalidation");
+assert.match(dashboard, /fetchWorkspaceGoalSnapshot/, "Cross-machine Goal entry fetches one exact Goal snapshot");
+assert.match(dashboard, /deriveMachineWriteAuthority/, "Machine writes derive from a committed source binding");
+assert.match(dashboard, /readOnly=\{machineWriteAuthority\.kind !== "ready"\}/, "Requested sources never grant write authority before commit");
+assert.match(dashboard, /invalidateCommittedMachine/, "Source transitions invalidate the prior machine binding immediately");
+assert.match(model, /machineBinding\?: MachineBindingToken/, "Action previews retain the machine binding that created them");
+assert.match(page, /assertMachineBinding\?\.\(previewBinding/, "Preview creation verifies its committed machine before and after the request");
+assert.match(page, /assertMachineBinding\?\.\(proposal\.machineBinding/, "Apply rejects previews from a stale machine binding");
 
 assert.match(model, /kind: "todo"/, "Todo has its own drawer selection");
 for (const field of ["dependencies", "nextTransition", "ownerLabel", "todoId", "taskClass"]) {
@@ -349,7 +372,7 @@ assert.match(i18n, /当前本地工作区（未绑定 Repository）/, "Chinese w
 assert.doesNotMatch(model, /kind: "agent"/, "The drawer model omits the read-only Agent settings variant");
 assert.match(
   dashboard,
-  /statusRequestActive = source\.kind === "example"\s*&& !exampleModeRequested;/,
+  /statusRequestActive = search\.view === "machine" && source\.kind === "example"\s*&& !exampleModeRequested;/,
   "Initial real-status loading must not display bundled example tasks; explicit example mode remains available",
 );
 

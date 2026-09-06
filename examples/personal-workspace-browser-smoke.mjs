@@ -2714,7 +2714,8 @@ async function main() {
     const remoteSourceSelect = remote.getByRole("combobox", { name: "选择控制面来源" });
     await remoteSourceSelect.click();
     const remoteSourceListbox = remote.getByRole("listbox", { name: "选择控制面来源" });
-    if (await remoteSourceListbox.getByRole("option").count() !== 4) throw new Error("Multiple SSH tunnel sources were not retained in the source catalog");
+    if (await remoteSourceListbox.getByRole("option").count() !== 5) throw new Error("All machines and multiple SSH tunnel sources were not retained in the source catalog");
+    if (await remoteSourceListbox.getByRole("option", { name: "全部机器", exact: true }).count() !== 1) throw new Error("The read-only All machines entry is missing from the source catalog");
     if (await remoteSourceListbox.locator(".personal-select-group-label").count() !== 1) throw new Error("Configured SSH Host quick-add group is missing");
     await remote.screenshot({ path: resolve(outputDir, "control-plane-select-open.png"), fullPage: false, animations: "disabled" });
     await remoteSourceListbox.getByRole("option", { name: "remote-build", exact: true }).click();
