@@ -2703,14 +2703,14 @@ async function main() {
     await remote.goto(url, { waitUntil: "networkidle" });
     await remote.getByRole("button", { name: "添加 SSH 隧道来源" }).click();
     await remote.getByLabel("本机 SSH Host").fill("remote-lab");
-    await remote.getByText("ssh -N -L 8876:127.0.0.1:8766 remote-lab", { exact: true }).waitFor({ state: "visible" });
-    await remote.getByRole("button", { name: "添加只读来源" }).click();
+    await remote.getByText("ssh -N -L 8876:127.0.0.1:8767 remote-lab", { exact: true }).waitFor({ state: "visible" });
+    await remote.getByRole("button", { name: "添加 SSH 来源" }).click();
     await remote.getByText("远端只读投影", { exact: true }).waitFor({ state: "visible" });
     await remote.getByRole("button", { name: "添加 SSH 隧道来源" }).click();
     await remote.getByRole("tab", { name: "手动 URL" }).click();
     await remote.getByLabel("名称").fill("Remote build host");
     await remote.getByLabel("本地转发 URL").fill("http://127.0.0.1:8976/status.json");
-    await remote.getByRole("button", { name: "添加只读来源" }).click();
+    await remote.getByRole("button", { name: "添加 SSH 来源" }).click();
     const remoteSourceSelect = remote.getByRole("combobox", { name: "选择控制面来源" });
     await remoteSourceSelect.click();
     const remoteSourceListbox = remote.getByRole("listbox", { name: "选择控制面来源" });

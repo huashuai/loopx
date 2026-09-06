@@ -162,7 +162,9 @@ async function main() {
         proposal_id: "remote-goal-browser-smoke",
         action_kind: "goal.create",
         summary: body.summary ?? "Create remote Goal",
-        normalized_parameters: applying ? { goal_id: "remote-browser-goal" } : body.normalized_parameters,
+        normalized_parameters: applying
+          ? { goal_id: "remote-browser-goal", title: "远端发布准备" }
+          : body.normalized_parameters,
         context: applying ? { kind: "manager" } : body.context,
         expected_state_fingerprint: "sha256:remote-browser-smoke",
         permission_classification: "workspace_write_on_confirmation",
@@ -230,9 +232,9 @@ async function main() {
     await page.getByRole("button", { name: "创建 Goal" }).first().click();
     const composer = page.getByRole("textbox", { name: "发送消息" });
     await composer.fill("我想创建一个长期 Goal：远端发布准备\n目标：验证远端创建\n完成标准：远端返回验证回执");
-    await composer.press("Enter");
+    await composer.press("Control+Enter");
     await page.getByRole("button", { name: "创建 Goal 并开始首轮" }).click();
-    await page.getByText("操作已完成：远端发布准备", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+    await page.getByText("已完成：创建 Goal：远端发布准备", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
     if (state.remoteActionRequests.length !== 2) throw new Error(`Expected remote preview/apply, received ${state.remoteActionRequests.length} requests`);
     if (state.localActionRequests.length !== 0) throw new Error(`Remote Goal creation hit the local control plane: ${state.localActionRequests.join(", ")}`);
     if (!state.remoteActionRequests.every((request) => request.headers["x-loopx-control-plane-instance"] === "remote-a-instance")) {

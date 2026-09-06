@@ -31,6 +31,7 @@ const now = Date.parse("2026-09-06T20:00:00Z");
 
 function source(id: string, label: string, readOnly: boolean): StatusSource {
   return {
+    goalCreationRequested: false,
     id,
     kind: readOnly ? "ssh_tunnel" : "local",
     label,
