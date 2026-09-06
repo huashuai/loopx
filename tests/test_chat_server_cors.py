@@ -17,6 +17,7 @@ def _start_server() -> tuple[ChatHTTPServer, threading.Thread]:
     server.runtime_root_override = None
     server.scan_roots = []
     server.limit = 20
+    server.control_plane_instance_id = "control-plane-cors-fixture"
     server.runtime_controller = _RuntimeController()
     server.lark_cli_resolution = LarkCliResolution(
         command=None,
@@ -44,10 +45,13 @@ def _request(
     method: str,
     origin: str | None,
     path: str = "/api/chat/capabilities",
+    body: str | None = None,
+    extra_headers: dict[str, str] | None = None,
 ) -> http.client.HTTPResponse:
     connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
     headers = {"Origin": origin} if origin else {}
-    connection.request(method, path, headers=headers)
+    headers.update(extra_headers or {})
+    connection.request(method, path, body=body, headers=headers)
     return connection.getresponse()
 
 
@@ -90,6 +94,8 @@ def test_chat_capabilities_expose_public_runtime_identity() -> None:
             "release_id",
             "source_revision",
         }
+        assert payload["control_plane_instance_id"] == "control-plane-cors-fixture"
+        assert payload["remote_goal_creation"] == "preview_locked_instance_bound"
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -130,6 +136,34 @@ def test_chat_options_exposes_loopback_preflight_only() -> None:
         assert response.getheader("Access-Control-Allow-Methods") == (
             "GET, POST, DELETE, OPTIONS"
         )
+        assert "X-LoopX-Control-Plane-Instance" in response.getheader(
+            "Access-Control-Allow-Headers"
+        )
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+
+
+def test_remote_write_rejects_a_different_control_plane_instance() -> None:
+    server, thread = _start_server()
+    try:
+        response = _request(
+            server.server_address[1],
+            method="POST",
+            origin="http://127.0.0.1:49152",
+            path="/api/actions/preview",
+            body="{}",
+            extra_headers={
+                "Content-Type": "application/json",
+                "X-LoopX-Control-Plane-Instance": "another-instance",
+            },
+        )
+        payload = json.loads(response.read().decode("utf-8"))
+
+        assert response.status == 409
+        assert payload["error_code"] == "control_plane_instance_mismatch"
+        assert payload["write_attempted"] is False
     finally:
         server.shutdown()
         thread.join(timeout=5)

@@ -22,9 +22,11 @@ def test_ensure_ssh_source_opens_tunnel_and_returns_status_url() -> None:
         "loopx.control_plane.status.ssh_tunnel.configured_ssh_host_aliases",
         return_value=["ark-devbox"],
     ), mock.patch(
-        "loopx.control_plane.status.ssh_tunnel._loopback_status_ok", fake_loopback
+        "loopx.control_plane.status.ssh_tunnel._loopback_control_ok", fake_loopback
     ), mock.patch(
-        "loopx.control_plane.status.ssh_tunnel._remote_status_ok", return_value=True
+        "loopx.control_plane.status.ssh_tunnel._loopback_status_ok", return_value=False
+    ), mock.patch(
+        "loopx.control_plane.status.ssh_tunnel._remote_control_ok", return_value=True
     ), mock.patch(
         "loopx.control_plane.status.ssh_tunnel.subprocess.run",
         side_effect=lambda args, **kwargs: calls.append(list(args)),
@@ -34,19 +36,20 @@ def test_ensure_ssh_source_opens_tunnel_and_returns_status_url() -> None:
     assert result == {
         "ok": True,
         "status_url": "http://127.0.0.1:8877/status.json",
+        "control_url": "http://127.0.0.1:8877",
         "tunnel_required": True,
         "remote_started": False,
     }
     tunnel_call = calls[0]
     assert tunnel_call[0] == "ssh"
     assert "-L" in tunnel_call
-    assert "8877:127.0.0.1:8766" in tunnel_call
+    assert "8877:127.0.0.1:8767" in tunnel_call
     assert "ark-devbox" in tunnel_call
     # The alias and port are passed as separate argv entries, never through a shell.
     assert "; " not in " ".join(tunnel_call)
 
 
-def test_ensure_ssh_source_starts_remote_status_when_missing() -> None:
+def test_ensure_ssh_source_starts_remote_control_plane_when_missing() -> None:
     probe_count = 0
 
     def fake_loopback(port: int, **kwargs: object) -> bool:
@@ -58,11 +61,13 @@ def test_ensure_ssh_source_starts_remote_status_when_missing() -> None:
         "loopx.control_plane.status.ssh_tunnel.configured_ssh_host_aliases",
         return_value=["ark-devbox"],
     ), mock.patch(
-        "loopx.control_plane.status.ssh_tunnel._loopback_status_ok", fake_loopback
+        "loopx.control_plane.status.ssh_tunnel._loopback_control_ok", fake_loopback
     ), mock.patch(
-        "loopx.control_plane.status.ssh_tunnel._remote_status_ok", return_value=False
+        "loopx.control_plane.status.ssh_tunnel._loopback_status_ok", return_value=False
     ), mock.patch(
-        "loopx.control_plane.status.ssh_tunnel._start_remote_status", return_value=None
+        "loopx.control_plane.status.ssh_tunnel._remote_control_ok", return_value=False
+    ), mock.patch(
+        "loopx.control_plane.status.ssh_tunnel._start_remote_control", return_value=None
     ) as start_remote, mock.patch(
         "loopx.control_plane.status.ssh_tunnel.subprocess.run", return_value=None
     ):
@@ -70,6 +75,21 @@ def test_ensure_ssh_source_starts_remote_status_when_missing() -> None:
 
     start_remote.assert_called_once_with("ark-devbox")
     assert result["remote_started"] is True
+
+
+def test_ensure_ssh_source_rejects_a_legacy_status_only_tunnel() -> None:
+    with mock.patch(
+        "loopx.control_plane.status.ssh_tunnel.configured_ssh_host_aliases",
+        return_value=["ark-devbox"],
+    ), mock.patch(
+        "loopx.control_plane.status.ssh_tunnel._loopback_control_ok", return_value=False
+    ), mock.patch(
+        "loopx.control_plane.status.ssh_tunnel._loopback_status_ok", return_value=True
+    ), mock.patch("loopx.control_plane.status.ssh_tunnel.subprocess.run") as run:
+        with pytest.raises(ValueError, match="status-only"):
+            ensure_ssh_source("ark-devbox", 8877)
+
+    run.assert_not_called()
 
 
 def test_ensure_ssh_source_rejects_unknown_alias() -> None:

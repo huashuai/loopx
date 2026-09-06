@@ -147,6 +147,10 @@ assert.match(page, /t\("composer\.agentProgress"\)/, "Progress report shortcut m
 assert.match(page, /t\("composer\.nextAction"\)[\s\S]*t\("composer\.prepareDraft"\)/, "Advice shortcut explains that it only prepares a draft");
 assert.match(page, /t\("composer\.monitor"\)[\s\S]*t\("composer\.monitorHint"\)/, "Monitor shortcut explains its editable-draft boundary");
 assert.match(page, /goalDraftActive[\s\S]*t\("composer\.createGoalDraft"\)[\s\S]*t\("composer\.createGoal"/, "Create Goal mode is visibly distinct from a normal chat draft");
+assert.match(page, /personal-channel-composer is-goal-create-only/, "Remote Goal creation marks the attachment-free composer layout explicitly");
+assert.match(styles, /\.personal-channel-composer\.is-goal-create-only\s*\{[^}]*grid-template-columns:\s*auto minmax\(0, 1fr\) 40px/, "The remote Goal composer gives its textarea the flexible column");
+assert.match(page, /rows=\{remoteGoalCreateOnly \? 7 : 1\}/, "The structured remote Goal draft opens as a multiline editor");
+assert.match(styles, /\.personal-channel-composer\.is-goal-create-only textarea\s*\{[^}]*min-height:\s*132px;[^}]*font-size:\s*13px;[^}]*line-height:\s*1\.55/, "The remote Goal editor uses compact form typography and a multiline height");
 assert.match(page, /setComposerDraft\(`manager:\$\{selectedAgentId\}`,\s*t\("composer\.createGoalTemplate"\)\)/, "Create Goal writes the localized template to the manager draft even when invoked from a Goal");
 assert.match(page, /personal-action-feedback/, "Typed actions surface a persistent visible receipt");
 assert.match(page, /visibleTimelineItems[\s\S]*item\.run\.runId === activeSessionRun\.runId/, "Session record mode filters unrelated Goal activity");
