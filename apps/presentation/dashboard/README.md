@@ -297,10 +297,22 @@ Selecting **+ Goal** performs a capability handshake and enables only typed
 Existing Goals, Todos, lifecycle actions, settings, corrections, and Agent
 sessions remain read-only.
 
-The switcher intentionally has no synthetic **All** source. Independent status
-feeds do not yet share authority, identity, or deduplication semantics, so
-combining them would imply cross-host coordination that the control plane has
-not established.
+The switcher also exposes a read-only **All machines** overview at
+`/?view=all-machines` (or `/chat/?view=all-machines` in the packaged app).
+It independently observes every registered source, shows each machine's
+connection health and the browser's last successful observation time, and
+aggregates ongoing Goals and open Todos. **Refresh all** starts a new bounded
+read cycle; one unavailable machine does not block the others.
+
+All machines is a projection, not a shared control plane. Goal and Todo
+identities stay namespaced by their source, including when two machines expose
+the same bare id; LoopX does not merge or deduplicate them. The overview issues
+read-only status requests and never starts an SSH tunnel. Selecting a Goal
+first reselects its owning source, verifies the current workspace-registry
+revision, and fetches that exact Goal before entering the machine workspace.
+Local writes remain governed by the existing preview/apply protocol after that
+revalidation. SSH-tunnel sources remain read-only, and selecting them grants no
+remote write authority.
 
 For project-local debugging or a disposable `loopx demo`, start a local
 status server from the project you want to inspect:
