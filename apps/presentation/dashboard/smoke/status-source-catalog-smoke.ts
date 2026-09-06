@@ -7,7 +7,9 @@ import {
   localStatusSource,
   projectedStatusSourceForUrl,
   removeStatusSource,
+  remoteGoalCreationControlPresentation,
   saveStatusSourceCatalog,
+  setRemoteGoalCreationRequested,
   statusSourceCatalogStorageKey,
   statusSourceForUrl,
 } from "../src/data/status-source-catalog";
@@ -57,8 +59,16 @@ const added = addSshTunnelStatusSource(initial, {
 assert("catalog" in added, "a valid tunnel source is accepted");
 equal(added.source.kind, "ssh_tunnel", "the source keeps its typed provider kind");
 equal(added.source.readOnly, true, "a tunneled source cannot inherit local write authority");
+equal(added.source.goalCreationRequested, false, "remote Goal creation requires a separate owner opt-in");
 equal(added.source.statusUrl, "http://localhost:8876/status.json", "the tunnel URL is canonicalized");
 equal(statusSourceForUrl(added.catalog, added.source.statusUrl, baseHref)?.id, added.source.id, "URL lookup preserves source identity");
+
+const bareLoopback = addSshTunnelStatusSource(initial, {
+  label: "Bare loopback",
+  statusUrl: "127.0.0.1:8879/status.json",
+}, baseHref);
+assert("catalog" in bareLoopback, "a pasted bare loopback address is normalized instead of becoming a Dashboard-relative path");
+equal(bareLoopback.source.statusUrl, "http://127.0.0.1:8879/status.json", "bare loopback input receives an explicit HTTP scheme");
 
 const publicSource = addSshTunnelStatusSource(initial, {
   label: "Unsafe public endpoint",
@@ -81,12 +91,26 @@ equal(secondTunnel.catalog.sources.length, 3, "local and multiple SSH sources co
 assert(secondTunnel.source.id !== added.source.id, "each tunnel keeps an independent stable identity");
 
 const storage = new MemoryStorage();
-saveStatusSourceCatalog(storage, secondTunnel.catalog);
+const requestedGoalCreation = setRemoteGoalCreationRequested(secondTunnel.catalog, added.source.id, true);
+equal(requestedGoalCreation.sources[1].goalCreationRequested, true, "the owner can opt one named source into remote Goal creation");
+equal(requestedGoalCreation.sources[2].goalCreationRequested, false, "the opt-in never grants another source write intent");
+saveStatusSourceCatalog(storage, requestedGoalCreation);
 const stored = JSON.parse(storage.getItem(statusSourceCatalogStorageKey) ?? "{}");
 stored.sources[0].readOnly = false;
 storage.setItem(statusSourceCatalogStorageKey, JSON.stringify(stored));
 const restored = loadStatusSourceCatalog(storage, baseHref);
 equal(restored.sources[1].readOnly, true, "persisted input cannot downgrade a tunnel to writable");
+equal(restored.sources[1].goalCreationRequested, true, "the explicit Goal-creation preference survives reload");
+deepEqual(
+  remoteGoalCreationControlPresentation(true, "error"),
+  { action: "retry", label: "retry" },
+  "an unavailable requested source offers retry instead of claiming Goal authority",
+);
+deepEqual(
+  remoteGoalCreationControlPresentation(true, "ready"),
+  { action: "disable", label: "ready" },
+  "only a verified capability handshake displays Goal creation as ready",
+);
 
 const withoutTunnel = removeStatusSource(restored, restored.sources[1].id);
 equal(withoutTunnel.sources.length, 2, "removing one tunnel preserves the other named source");
@@ -106,7 +130,7 @@ equal(defaultConfiguredSshHostsUrl, "/ssh-hosts", "configured Host discovery sta
 deepEqual(configuredHosts.hosts, [{ alias: "remote-lab" }, { alias: "jump_box" }], "only explicit safe SSH aliases enter the browser catalog");
 const configuredDraft = configuredSshTunnelDraft("remote-lab", "8876");
 assert("command" in configuredDraft, "a configured Host and valid local port produce a tunnel draft");
-equal(configuredDraft.command, "ssh -N -L 8876:127.0.0.1:8766 remote-lab", "the UI generates one exact OpenSSH command");
+equal(configuredDraft.command, "ssh -N -L 8876:127.0.0.1:8767 remote-lab", "the UI forwards the complete remote control-plane service");
 equal(configuredDraft.statusUrl, "http://127.0.0.1:8876/status.json", "the selected Host maps to the loopback-only status source");
 assert("error" in configuredSshTunnelDraft("remote-lab", "22"), "privileged local ports fail closed");
 

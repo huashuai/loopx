@@ -63,14 +63,17 @@ async function selectSource(page, select, label) {
 }
 
 async function main() {
-  const { chromium } = loadPlaywright();
+  const { chromium, webkit } = loadPlaywright();
+  const browserType = process.env.LOOPX_BROWSER === "webkit" ? webkit : chromium;
   await mkdir(outputDir, { recursive: true });
   const server = startServer();
   let browser;
   try {
     const appUrl = `http://127.0.0.1:${port}/${packaged ? "chat/" : ""}`;
     await waitForHttp(appUrl);
-    browser = await launchBrowser(chromium);
+    browser = process.env.LOOPX_BROWSER === "webkit"
+      ? await browserType.launch({ headless: true })
+      : await launchBrowser(browserType);
     const page = await browser.newPage({ viewport: { width: 1512, height: 982 } });
     const state = {
       ensureGates: new Map(),
@@ -78,6 +81,8 @@ async function main() {
       statusGates: new Map(),
       statusRequestsByPort: new Map(),
       statusStartedByPort: new Map(),
+      localActionRequests: [],
+      remoteActionRequests: [],
     };
     const payloads = new Map([
       ["local", statusPayload("local-goal", "Local Goal Only")],
@@ -123,6 +128,58 @@ async function main() {
     await installStatusRoute("http://127.0.0.1:8766/status.json", "8766");
     await installStatusRoute("http://127.0.0.1:8876/status.json", "8876");
     await installStatusRoute("http://127.0.0.1:8976/status.json", "8976");
+    await page.route("http://127.0.0.1:8876/api/chat/capabilities", (route) => route.fulfill({
+      contentType: "application/json",
+      json: {
+        ok: true,
+        schema_version: "loopx_chat_capabilities_v1",
+        runtime_identity: {
+          schema_version: "loopx_runtime_identity_v1",
+          package_version: "0.6.0",
+          release_id: "browser-smoke",
+          source_revision: "browser-smoke",
+        },
+        control_plane_instance_id: "remote-a-instance",
+        remote_goal_creation: "preview_locked_instance_bound",
+        agent_backend: "multi_adapter",
+        sandbox: "read-only",
+        approval_policy: "never",
+        todo_write: "preview_locked",
+        goal_id: null,
+        typed_actions: true,
+        action_kinds: ["goal.create"],
+        adapters: [],
+      },
+      status: 200,
+    }));
+    await page.route("http://127.0.0.1:8876/api/actions/**", async (route) => {
+      const request = route.request();
+      const body = request.postDataJSON();
+      state.remoteActionRequests.push({ headers: request.headers(), url: request.url() });
+      const applying = request.url().endsWith("/apply");
+      const proposal = {
+        schema_version: "loopx_chat_action_proposal_v1",
+        proposal_id: "remote-goal-browser-smoke",
+        action_kind: "goal.create",
+        summary: body.summary ?? "Create remote Goal",
+        normalized_parameters: applying ? { goal_id: "remote-browser-goal" } : body.normalized_parameters,
+        context: applying ? { kind: "manager" } : body.context,
+        expected_state_fingerprint: "sha256:remote-browser-smoke",
+        permission_classification: "workspace_write_on_confirmation",
+        validation_evidence: [],
+        available_transitions: ["apply"],
+        status: applying ? "applied" : "preview_ready",
+        receipt: applying ? { projection_verified: true } : null,
+        stale: null,
+        created_at: "2026-09-06T00:00:00Z",
+        updated_at: "2026-09-06T00:00:00Z",
+      };
+      await route.fulfill({ contentType: "application/json", json: { ok: true, proposal }, status: 200 });
+    });
+    await page.route(`http://127.0.0.1:${port}/api/actions/**`, async (route) => {
+      state.localActionRequests.push(route.request().url());
+      await route.fulfill({ contentType: "application/json", json: { ok: false, error: "wrong control plane" }, status: 500 });
+    });
 
     await page.goto(appUrl, { waitUntil: "networkidle" });
     await page.getByText("Local Goal Only", { exact: true }).first().waitFor({ state: "visible", timeout: 10_000 });
@@ -165,6 +222,22 @@ async function main() {
     if (await selectedSourceLabel(sourceSelect) !== "本机") throw new Error("A late SSH ensure completion overrode the newer local selection");
     if ((state.statusRequestsByPort.get("8876") ?? 0) !== 0) throw new Error("A superseded SSH selection still started its status request");
     if (await page.getByText("Remote A Goal Only", { exact: true }).count()) throw new Error("A superseded SSH selection replaced local goals");
+
+    await selectSource(page, sourceSelect, "Remote A");
+    await page.getByText("Remote A Goal Only", { exact: true }).first().waitFor({ state: "visible", timeout: 10_000 });
+    await page.getByRole("button", { name: "启用远端 Goal 创建" }).click();
+    await page.getByText("SSH 隧道 · 可创建 Goal", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+    await page.getByRole("button", { name: "创建 Goal" }).first().click();
+    const composer = page.getByRole("textbox", { name: "发送消息" });
+    await composer.fill("我想创建一个长期 Goal：远端发布准备\n目标：验证远端创建\n完成标准：远端返回验证回执");
+    await composer.press("Enter");
+    await page.getByRole("button", { name: "创建 Goal 并开始首轮" }).click();
+    await page.getByText("操作已完成：远端发布准备", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+    if (state.remoteActionRequests.length !== 2) throw new Error(`Expected remote preview/apply, received ${state.remoteActionRequests.length} requests`);
+    if (state.localActionRequests.length !== 0) throw new Error(`Remote Goal creation hit the local control plane: ${state.localActionRequests.join(", ")}`);
+    if (!state.remoteActionRequests.every((request) => request.headers["x-loopx-control-plane-instance"] === "remote-a-instance")) {
+      throw new Error("Remote Goal creation did not pin the capability-handshake instance");
+    }
     await page.screenshot({ path: resolve(outputDir, "local-after-races.png"), fullPage: false, animations: "disabled" });
     console.log(`status source switch browser smoke (${packaged ? "packaged" : "development"}): ok`);
   } finally {
