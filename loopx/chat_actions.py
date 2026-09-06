@@ -177,6 +177,8 @@ class ChatActionService(
     def _registry_fingerprint(self) -> str:
         try:
             content = self.registry_path.read_bytes()
+        except FileNotFoundError:
+            content = b""
         except OSError as exc:
             raise ValueError("the active LoopX registry is unavailable") from exc
         return hashlib.sha256(content).hexdigest()
