@@ -267,32 +267,35 @@ http://127.0.0.1:8767/chat/
 
 The Personal Workspace source switcher keeps a browser-local catalog with one
 built-in **Local** source and any number of named SSH-tunnel sources. Start the
-status server on each remote host, then forward each host to a distinct local
-port:
+Chat/control service on each remote host, then forward each host to a distinct
+local port:
 
 ```bash
 # On the remote host
-loopx serve-status --global-registry --host 127.0.0.1 --port 8766
+loopx chat --global-registry --host 127.0.0.1 --port 8767 --no-open
 
 # On the operator machine; choose a different local port for every source
-ssh -N -L 8876:127.0.0.1:8766 <remote-host>
+ssh -N -L 8876:127.0.0.1:8767 <remote-host>
 ```
 
 The add-source panel reads only explicit, shell-safe `Host` aliases from the
 operator machine's OpenSSH config through the current loopback Dashboard
 origin. Packaged `loopx dashboard` serves this endpoint from its Chat runtime,
 so a custom Dashboard port works without a fixed discovery port; development
-mode proxies the same path to the local Chat service. Select an alias, choose a
-local port, copy and run the generated tunnel command, then add the source.
+mode proxies the same path to the local Chat service. Select an alias and local
+port, then add the source. The local service starts the fixed SSH forwarding
+command and starts the remote Chat/control service when needed.
 Wildcard hosts, negated patterns, `IdentityFile`, `ProxyCommand`, hostnames,
 credentials, and config paths are never projected to the browser. The manual
 loopback-URL path remains available for custom forwarding setups.
 
-The browser catalog stores only the selected alias label and loopback URL;
-LoopX does not store SSH credentials or open the tunnel. The active source
-reports its connection health. Local stays interactive, while every custom
-SSH-tunnel source is explicitly read-only even though its forwarded URL is
-loopback.
+The browser catalog stores only the selected alias label, loopback URL, and the
+remote Goal-creation preference. LoopX does not store SSH credentials. The
+active source reports its connection health. Every SSH source starts read-only.
+Selecting **+ Goal** performs a capability handshake and enables only typed
+`goal.create` preview/apply requests bound to that remote service instance.
+Existing Goals, Todos, lifecycle actions, settings, corrections, and Agent
+sessions remain read-only.
 
 The switcher intentionally has no synthetic **All** source. Independent status
 feeds do not yet share authority, identity, or deduplication semantics, so
