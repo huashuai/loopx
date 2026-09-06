@@ -232,6 +232,7 @@ def assert_http_action_api(root: Path) -> None:
     registry_path.write_text(json.dumps(registry_fixture) + "\n", encoding="utf-8")
     server = ChatHTTPServer(("127.0.0.1", free_port()), ChatRequestHandler)
     server.registry_path = registry_path
+    server.control_plane_instance_id = "chat-action-smoke-instance"
     server.action_store = action_store
     server.action_service = service
     server.chat_store = chat_store
@@ -1111,6 +1112,27 @@ def assert_zero_goal_workspace_selection(root: Path) -> None:
         assert selected in {project.resolve(), second.resolve()}
     else:
         raise AssertionError("multiple workspaces must require a public-safe selection")
+
+    registry_path.unlink()
+    fresh = service.preview({
+        "action_kind": "goal.create",
+        "summary": "Create the first Goal in a fresh registry",
+        "normalized_parameters": {
+            "goal_id": "first-goal",
+            "title": "First Goal",
+            "workspace_ref": "current",
+            "heartbeat": {"enabled": False},
+        },
+        "context": {"kind": "manager", "goal_id": None},
+        "idempotency_key": "fresh-registry-first-goal",
+    })
+    assert fresh["status"] == "preview_ready", fresh
+    assert not registry_path.exists(), "preview must not create the missing registry"
+    created = service.apply(str(fresh["proposal_id"]))
+    assert created["proposal"]["status"] == "applied", created
+    initialized = json.loads(registry_path.read_text(encoding="utf-8"))
+    assert initialized["schema_version"] == "0.1", initialized
+    assert [goal["id"] for goal in initialized["goals"]] == ["first-goal"], initialized
 
 
 def main() -> None:
