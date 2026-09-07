@@ -212,6 +212,7 @@ class ChatRuntimeController:
         idle_timeout_sec: float = 180.0,
         hard_timeout_sec: float = 900.0,
         endpoint_registry: AgentEndpointRegistry | None = None,
+        registry_path: Path | None = None,
     ) -> None:
         self.store = store
         self.codex_bin = codex_bin
@@ -220,6 +221,7 @@ class ChatRuntimeController:
         self.idle_timeout_sec = idle_timeout_sec
         self.hard_timeout_sec = hard_timeout_sec
         self.endpoint_registry = endpoint_registry or AgentEndpointRegistry(store.root)
+        self.registry_path = registry_path
         self.adapters: dict[str, ChatRuntimeAdapter] = {}
         self.cancelled_turns: set[tuple[str, str]] = set()
         self.turn_event_buffers: dict[tuple[str, str], _TurnEventBuffer] = {}
@@ -900,6 +902,7 @@ class ChatRuntimeController:
                     try:
                         project_completed_managed_task_turn(
                             runtime_root=self.store.root.parent,
+                            registry_path=self.registry_path,
                             session=finalized_session,
                             turn=finalized_turn,
                         )
