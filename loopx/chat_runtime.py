@@ -19,6 +19,7 @@ from .chat_store import (
     ChatSessionStore,
     utc_now,
 )
+from .managed_chat_turn_projection import project_completed_managed_task_turn
 from .chat_providers import ClaudeCodeAdapter, direct_model_from_environment
 
 
@@ -889,10 +890,24 @@ class ChatRuntimeController:
                 return
             if adapter.upstream_thread_id != str((self.store.load_session(session_id) or {}).get("upstream_thread_id") or ""):
                 self.store.update_session(session_id, upstream_thread_id=adapter.upstream_thread_id)
-            self.store.finalize_managed_turn_completion(
+            finalized_turn = self.store.finalize_managed_turn_completion(
                 session_id,
                 turn_id,
             )
+            if finalized_turn is not None:
+                finalized_session = self.store.load_session(session_id)
+                if finalized_session is not None:
+                    try:
+                        project_completed_managed_task_turn(
+                            runtime_root=self.store.root.parent,
+                            session=finalized_session,
+                            turn=finalized_turn,
+                        )
+                    except Exception:  # noqa: BLE001 - surface projection health without losing the Turn.
+                        self.store.update_session(
+                            session_id,
+                            last_error_code="managed_turn_projection_failed",
+                        )
         except CodexChatTimeoutError as exc:
             event_buffer.close()
             if consume_interrupted():
