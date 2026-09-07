@@ -126,12 +126,15 @@ async function main() {
     const payloads = new Map([
       ["local", statusPayload("This machine")],
       ["remote-a", statusPayload("Remote A")],
+      ["remote-unbound", statusPayload("Unbound source")],
     ]);
     const requestLedger = [];
     let localExactGate = null;
     let localExactStarted = null;
     let ensureRequestCount = 0;
     let crossedStatusRequestCount = 0;
+    let unboundStatusRequestCount = 0;
+    const unboundRequestLedger = [];
 
     await page.addInitScript(() => {
       localStorage.setItem("loopx-pw-locale", "en");
@@ -155,6 +158,11 @@ async function main() {
             label: "Crossed source",
             sourceBinding: { controlPlaneInstanceId: "remote-c-original", schemaVersion: "ssh_source_binding_v1" },
             statusUrl: "http://127.0.0.1:9076/status.json",
+          },
+          {
+            kind: "ssh_tunnel",
+            label: "Unbound source",
+            statusUrl: "http://127.0.0.1:9176/status.json",
           },
         ],
       }));
@@ -183,6 +191,14 @@ async function main() {
       json: { control_plane_instance_id: "remote-c-wrong", ok: true, schema_version: "loopx_chat_capabilities_v1" },
       status: 200,
     }));
+    await page.route("http://127.0.0.1:9176/api/chat/capabilities", (route) => {
+      unboundRequestLedger.push("capabilities");
+      return route.fulfill({
+        contentType: "application/json",
+        json: { control_plane_instance_id: "remote-unbound-instance", ok: true, schema_version: "loopx_chat_capabilities_v1" },
+        status: 200,
+      });
+    });
 
     async function serveStatus(route, sourceId) {
       requestLedger.push({ method: route.request().method(), sourceId, url: route.request().url() });
@@ -209,6 +225,11 @@ async function main() {
       crossedStatusRequestCount += 1;
       return route.fulfill({ contentType: "application/json", json: statusPayload("Wrong machine"), status: 200 });
     });
+    await page.route("http://127.0.0.1:9176/status.json*", (route) => {
+      unboundStatusRequestCount += 1;
+      unboundRequestLedger.push("status");
+      return serveStatus(route, "remote-unbound");
+    });
 
     const overviewUrl = `${appUrl}?statusUrl=/status.json&view=all-machines`;
     await page.goto(overviewUrl, { waitUntil: "domcontentloaded" });
@@ -224,6 +245,11 @@ async function main() {
       .locator("text=Unavailable").waitFor();
     await page.locator(".all-machines-health-row").filter({ hasText: "Crossed source" })
       .locator("text=Unavailable").waitFor();
+    const unboundRow = page.locator(".all-machines-health-row").filter({ hasText: "Unbound source" });
+    await unboundRow.getByRole("button", { name: "Select Unbound source once to verify" }).waitFor();
+    if (unboundStatusRequestCount) {
+      throw new Error("An unbound source was read before explicit owner verification");
+    }
     if (crossedStatusRequestCount) {
       throw new Error("A binding-mismatched source rendered status from another machine");
     }
@@ -272,6 +298,21 @@ async function main() {
     await page.getByRole("heading", { name: "All machines", exact: true }).waitFor();
     await page.setViewportSize({ height: 844, width: 390 });
     await page.screenshot({ path: resolve(outputDir, "mobile-first-screen.png"), fullPage: false, animations: "disabled" });
+
+    await unboundRow.getByRole("button", { name: "Select Unbound source once to verify" }).click();
+    await page.waitForURL((url) => url.searchParams.get("view") === "machine" && url.searchParams.get("statusUrl")?.includes("9176"));
+    const storedBinding = await page.evaluate(() => {
+      const catalog = JSON.parse(localStorage.getItem("loopx-status-source-catalog-v1") ?? "{}");
+      return catalog.sources?.find((source) => source.label === "Unbound source")?.sourceBinding ?? null;
+    });
+    if (storedBinding?.controlPlaneInstanceId !== "remote-unbound-instance") {
+      throw new Error("Explicit source verification did not persist the observed machine identity");
+    }
+    if (unboundStatusRequestCount < 1
+        || unboundRequestLedger[0] !== "capabilities"
+        || unboundRequestLedger.slice(1).some((request) => request !== "status")) {
+      throw new Error(`Explicit source verification did not gate status behind identity: ${unboundRequestLedger.join(",")}`);
+    }
     console.log(`all-machines-overview-browser-smoke (${packaged ? "packaged" : "development"}): ok\npreview=${overviewUrl}\nscreenshots=${outputDir}`);
   } finally {
     await cleanupBrowserSmoke({ browser, fixturePaths: [], server });

@@ -31,6 +31,7 @@ export type MachineHealthState =
 export type AllMachinesMachine = {
   ref: MachineSourceRef;
   health: MachineHealthState;
+  verificationRequired: boolean;
   lastSuccessAt: number | null;
   activeGoalCount: number;
   openTodoCount: number;
@@ -157,6 +158,7 @@ export function buildAllMachinesOverview(
     machines.push({
       ref: sourceRef,
       health: machineHealth(observation, now),
+      verificationRequired: observation.currentError === "binding_required",
       lastSuccessAt: observation.lastSuccessAt,
       activeGoalCount: sourceGoals.length,
       openTodoCount: sourceTodos.length,

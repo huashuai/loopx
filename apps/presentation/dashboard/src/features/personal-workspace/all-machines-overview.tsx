@@ -28,7 +28,15 @@ function observationLabel(value: number | null, locale: string, now: number) {
   return formatter.format(-Math.round(elapsedSeconds / 60), "minute");
 }
 
-function MachineHealthRow({ machine, now }: { machine: AllMachinesMachine; now: number }) {
+function MachineHealthRow({
+  machine,
+  now,
+  onVerify,
+}: {
+  machine: AllMachinesMachine;
+  now: number;
+  onVerify: () => void;
+}) {
   const { locale, t } = useWorkspaceI18n();
   const Icon = healthIcon[machine.health];
   const observed = observationLabel(machine.lastSuccessAt, locale, now);
@@ -37,13 +45,26 @@ function MachineHealthRow({ machine, now }: { machine: AllMachinesMachine; now: 
       <span className="all-machines-health-icon"><Icon aria-hidden="true" className={machine.health === "loading" ? "is-spinning" : undefined} size={16} /></span>
       <div>
         <strong>{machine.ref.sourceLabel}</strong>
-        <small>{t(`allMachines.health.${machine.health}`)}</small>
+        <small>{t(machine.verificationRequired
+          ? "allMachines.health.verificationRequired"
+          : `allMachines.health.${machine.health}`)}</small>
       </div>
       <span>{t("allMachines.goalCount", { count: machine.activeGoalCount })}</span>
       <span>{t("allMachines.todoCount", { count: machine.openTodoCount })}</span>
-      <time dateTime={machine.lastSuccessAt ? new Date(machine.lastSuccessAt).toISOString() : undefined} title={machine.lastSuccessAt ? new Date(machine.lastSuccessAt).toLocaleString(locale) : undefined}>
-        {observed ?? t("allMachines.neverObserved")}
-      </time>
+      {machine.verificationRequired ? (
+        <button
+          aria-label={t("allMachines.verifySource", { source: machine.ref.sourceLabel })}
+          className="all-machines-verify-button"
+          onClick={onVerify}
+          type="button"
+        >
+          {t("allMachines.verify")}
+        </button>
+      ) : (
+        <time dateTime={machine.lastSuccessAt ? new Date(machine.lastSuccessAt).toISOString() : undefined} title={machine.lastSuccessAt ? new Date(machine.lastSuccessAt).toLocaleString(locale) : undefined}>
+          {observed ?? t("allMachines.neverObserved")}
+        </time>
+      )}
     </article>
   );
 }
@@ -96,7 +117,14 @@ export function AllMachinesOverviewPage({
         <section className="all-machines-section">
           <header><div><h2>{t("allMachines.machineHealth")}</h2><p>{t("allMachines.machineHealthDescription")}</p></div></header>
           <div className="all-machines-health-list">
-            {overview.machines.map((machine) => <MachineHealthRow key={machine.ref.sourceId} machine={machine} now={now} />)}
+            {overview.machines.map((machine) => (
+              <MachineHealthRow
+                key={machine.ref.sourceId}
+                machine={machine}
+                now={now}
+                onVerify={() => statusSourceControl.onSelect(machine.ref.sourceId)}
+              />
+            ))}
           </div>
         </section>
 
