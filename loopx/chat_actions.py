@@ -11,7 +11,8 @@ from typing import Any, Mapping, Sequence
 from .agent_registry import agent_profile_for_goal, registered_agent_ids_for_goal
 from .bootstrap import bootstrap_project
 from .chat import apply_todo_review_preview, build_todo_review_preview
-from .chat_action_store import ActionConflictError, ChatActionStore
+from .chat_action_store import ActionConflictError, ChatActionStore, PROPOSAL_STATES
+from .chat_gate_actions import ChatGateActionMixin
 from .chat_goal_lifecycle_actions import ChatGoalLifecycleActionMixin
 from .chat_goal_start import (
     build_managed_goal_first_turn_packet,
@@ -146,7 +147,10 @@ def _monitor_text(parameters: Mapping[str, Any]) -> str | None:
 
 
 class ChatActionService(
-    ChatGoalLifecycleActionMixin, ChatMonitorActionMixin, ChatTodoActionMixin
+    ChatGateActionMixin,
+    ChatGoalLifecycleActionMixin,
+    ChatMonitorActionMixin,
+    ChatTodoActionMixin,
 ):
     """Validate previews and route applies through canonical LoopX services."""
 
@@ -1304,7 +1308,29 @@ class ChatActionService(
         return proposal
 
     def load(self, proposal_id: str) -> dict[str, Any] | None:
-        return self.store.load(proposal_id)
+        return self._reconcile_gate_proposal(self.store.load(proposal_id))
+
+    def list(
+        self,
+        *,
+        goal_id: str | None = None,
+        context_kind: str | None = None,
+        status: str | None = None,
+    ) -> list[dict[str, Any]]:
+        if status and status not in PROPOSAL_STATES:
+            raise ValueError("status must be a supported typed action state")
+        proposals = self.store.list(
+            goal_id=goal_id,
+            context_kind=context_kind,
+        )
+        reconciled = [
+            current
+            for proposal in proposals
+            if (current := self._reconcile_gate_proposal(proposal)) is not None
+        ]
+        if status:
+            return [proposal for proposal in reconciled if proposal.get("status") == status]
+        return reconciled
 
     def cancel(self, proposal_id: str) -> dict[str, Any]:
         return self.store.cancel(proposal_id)
@@ -1316,9 +1342,11 @@ class ChatActionService(
         return self.store.mark_deferred(proposal_id)
 
     def regenerate(self, proposal_id: str) -> dict[str, Any]:
-        proposal = self.store.load(proposal_id)
+        proposal = self.load(proposal_id)
         if proposal is None:
             raise KeyError("typed Chat action proposal was not found")
+        if proposal.get("status") == "applied":
+            return proposal
         if proposal.get("status") not in {"stale", "failed", "gated", "rejected"}:
             raise ActionConflictError(
                 f"proposal in {proposal.get('status')} state cannot be regenerated"
@@ -1337,7 +1365,7 @@ class ChatActionService(
         )
 
     def apply(self, proposal_id: str) -> dict[str, Any]:
-        proposal = self.store.load(proposal_id)
+        proposal = self.load(proposal_id)
         if proposal is None:
             raise KeyError("typed Chat action proposal was not found")
         if proposal.get("status") == "applied":
