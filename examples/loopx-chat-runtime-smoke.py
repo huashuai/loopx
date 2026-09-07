@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import stat
 import sys
 import tempfile
@@ -156,6 +157,43 @@ def main() -> None:
         assert created is True
         completed = first.wait_for_turn(session_id=session_id, turn_id=turn["turn_id"], timeout_sec=3)
         assert completed["status"] == "completed", completed
+        execution_session, resumed = first.open_session(
+            goal_id="durable-goal",
+            agent_id="codex",
+            work_dir=root,
+            objective="Create one bounded artifact.",
+            mode="resume_latest",
+            channel_id="task.todo-managed-start",
+        )
+        assert resumed is False, execution_session
+        execution_turn, created = first.submit_turn(
+            session_id=execution_session["session_id"],
+            client_turn_id="managed-goal-start-turn",
+            message="complete normally",
+            work_dir=root,
+            objective="Create one bounded artifact.",
+        )
+        assert created is True
+        execution_turn = first.wait_for_turn(
+            session_id=execution_session["session_id"],
+            turn_id=execution_turn["turn_id"],
+            timeout_sec=3,
+        )
+        assert execution_turn["status"] == "completed", execution_turn
+        run_index = store.root.parent / "goals" / "durable-goal" / "runs" / "index.jsonl"
+        assert run_index.exists(), run_index
+        run_rows = [json.loads(line) for line in run_index.read_text(encoding="utf-8").splitlines()]
+        assert len(run_rows) == 1, run_rows
+        managed_turn = run_rows[0]["managed_chat_turn"]
+        assert managed_turn["schema_version"] == "managed_chat_turn_projection_v0"
+        assert managed_turn["session_id"] == execution_session["session_id"]
+        assert managed_turn["turn_id"] == execution_turn["turn_id"]
+        assert managed_turn["todo_id"] == "todo-managed-start"
+        assert managed_turn["status"] == "completed"
+        assert managed_turn["outcome_claimed"] is False
+        assert managed_turn["raw_response_recorded"] is False
+        run_record = Path(run_rows[0]["json_path"]).read_text(encoding="utf-8")
+        assert "Runtime response." not in run_record, run_record
         first.close()
 
         second = ChatRuntimeController(store=store, codex_bin=str(fake))

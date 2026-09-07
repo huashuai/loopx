@@ -13,6 +13,11 @@ from .bootstrap import bootstrap_project
 from .chat import apply_todo_review_preview, build_todo_review_preview
 from .chat_action_store import ActionConflictError, ChatActionStore
 from .chat_goal_lifecycle_actions import ChatGoalLifecycleActionMixin
+from .chat_goal_start import (
+    build_managed_goal_first_turn_packet,
+    goal_create_write_scope,
+    render_managed_goal_first_turn_message,
+)
 from .chat_monitor_actions import ChatMonitorActionMixin
 from .chat_store import ChatSessionStore
 from .chat_todo_actions import ChatTodoActionMixin
@@ -848,6 +853,10 @@ class ChatActionService(
             else None
         )
         objective = str(parameters.get("objective") or parameters["title"])
+        write_scope = goal_create_write_scope(
+            permission=parameters.get("permission"),
+            project=project,
+        )
         result = (
             {"ok": True}
             if recovering
@@ -870,7 +879,7 @@ class ChatActionService(
                 spawn_allowed=False,
                 max_children=0,
                 allowed_domains=[],
-                write_scope=[],
+                write_scope=write_scope,
                 onboarding_scan_enabled=False,
                 accept_onboarding_agent_todos=False,
                 begin_autonomous_advance=False,
@@ -976,24 +985,31 @@ class ChatActionService(
                 "quota_state": str(guard.get("state") or "waiting"),
             }
         if agent_id and self.runtime_controller is not None and first_turn_gate is None:
+            first_turn_packet = build_managed_goal_first_turn_packet(
+                goal_id=goal_id,
+                agent_id=agent_id,
+                objective=objective,
+                quota_guard=guard,
+            )
+            session_channel_id = (
+                f"task.{todo_ids[0]}"
+                if write_scope and todo_ids
+                else f"goal.{goal_id}"
+            )
             session, _resumed = self.runtime_controller.open_session(
                 goal_id=goal_id,
                 agent_id=agent_id,
                 work_dir=project,
                 objective=objective,
                 mode="resume_latest",
-                channel_id=f"goal.{goal_id}",
+                channel_id=session_channel_id,
                 agent_goal_id=goal_id,
             )
             session_id = _opaque(session.get("session_id"), field="session_id")
             first_turn, created = self.runtime_controller.submit_turn(
                 session_id=session_id,
                 client_turn_id=f"goal-start-{proposal_id}",
-                message=(
-                    f"开始推进 Goal {goal_id}。先核对目标边界和现有 Todo，"
-                    f"首个 Todo：{'；'.join(str(item) for item in (parameters.get('initial_todos') or [])[:3]) or '按目标边界建立首个可验证进展'}。"
-                    "然后直接推进并报告可验证结果；遇到权限边界时停止并提出明确 Gate。"
-                ),
+                message=render_managed_goal_first_turn_message(first_turn_packet),
                 work_dir=project,
                 objective=objective,
             )

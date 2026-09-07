@@ -57,6 +57,17 @@ def receipt(receipt_id: str = "receipt-goal-create-1") -> dict[str, object]:
     }
 
 
+def managed_goal_first_turn_packet(message: object) -> dict[str, object]:
+    text = str(message)
+    start_marker = "LOOPX_FIRST_TURN_PACKET_START"
+    end_marker = "LOOPX_FIRST_TURN_PACKET_END"
+    assert start_marker in text and end_marker in text, text
+    encoded = text.split(start_marker, 1)[1].split(end_marker, 1)[0].strip()
+    packet = json.loads(encoded)
+    assert isinstance(packet, dict), packet
+    return packet
+
+
 def assert_owner_only_tree(root: Path) -> None:
     assert stat.S_IMODE(root.stat().st_mode) == 0o700, oct(root.stat().st_mode)
     for path in root.rglob("*"):
@@ -197,6 +208,7 @@ def write_registry_fixture(root: Path) -> tuple[Path, Path]:
 
 def assert_http_action_api(root: Path) -> None:
     registry_path, state_path = write_registry_fixture(root)
+    project = registry_path.parent.parent
     runtime_root = root / "runtime"
     action_store = ChatActionStore(runtime_root / "chat" / "actions")
     chat_store = ChatSessionStore(runtime_root)
@@ -259,6 +271,7 @@ def assert_http_action_api(root: Path) -> None:
                 "goal_id": "new-goal",
                 "title": "New Goal",
                 "objective": "Deliver a bounded verified result.",
+                "permission": "workspace_write_on_confirmation",
                 "agent_id": "codex",
                 "workspace_ref": "current",
                 "heartbeat": {"enabled": False},
@@ -381,11 +394,35 @@ def assert_http_action_api(root: Path) -> None:
         assert goal_resources["session_id"], goal_resources
         assert goal_resources["turn_id"], goal_resources
         assert runtime_controller.opened_sessions[-1]["goal_id"] == "new-goal"
+        assert runtime_controller.opened_sessions[-1]["channel_id"] == (
+            f"task.{goal_resources['todo_ids'][0]}"
+        )
         assert runtime_controller.submissions[-1]["session_id"] == goal_resources["session_id"]
-        assert "Verify the new Goal projection" in runtime_controller.submissions[-1]["message"]
+        first_turn_packet = managed_goal_first_turn_packet(
+            runtime_controller.submissions[-1]["message"]
+        )
+        assert first_turn_packet["schema_version"] == "loopx_managed_goal_first_turn_v0"
+        assert first_turn_packet["goal_id"] == "new-goal", first_turn_packet
+        assert first_turn_packet["agent_id"] == "codex", first_turn_packet
+        assert first_turn_packet["objective"] == "Deliver a bounded verified result.", first_turn_packet
+        assert first_turn_packet["selected_todo"]["todo_id"] == goal_resources["todo_ids"][0]
+        assert first_turn_packet["selected_todo"]["text"] == "Verify the new Goal projection"
+        assert first_turn_packet["interaction_contract"]["agent_channel"]["must_attempt"] is True
+        assert first_turn_packet["interaction_contract"]["agent_channel"]["delivery_allowed"] is True
+        assert first_turn_packet["execution_obligation"]["must_attempt_work"] is True
+        assert first_turn_packet["goal_boundary"]["write_scope"] == [str(project.resolve())]
+        assert "todo add --goal-id new-goal --role user --task-class user_gate" in (
+            first_turn_packet["todo_write_hint"]["user_gate_command_template"]
+        )
+        next_cli_actions = first_turn_packet["interaction_contract"]["cli_channel"][
+            "next_cli_actions"
+        ]
+        assert any("refresh-state --goal-id new-goal" in command for command in next_cli_actions)
+        assert any("quota spend-slot --goal-id new-goal" in command for command in next_cli_actions)
         registry_after_goal = json.loads(registry_path.read_text(encoding="utf-8"))
         new_goal = next(item for item in registry_after_goal["goals"] if item["id"] == "new-goal")
         assert new_goal["display_name"] == "New Goal", new_goal
+        assert new_goal["coordination"]["write_scope"] == [str(project.resolve())], new_goal
         history_after_goal = collect_history(
             registry_path=registry_path,
             runtime_root=runtime_root,
@@ -419,6 +456,7 @@ def assert_http_action_api(root: Path) -> None:
                     "goal_id": "scheduled-goal",
                     "title": "Scheduled Goal",
                     "objective": "Create the Goal before requesting host scheduling.",
+                    "permission": "read_only",
                     "agent_id": "codex",
                     "workspace_ref": "current",
                     "heartbeat": {
@@ -444,7 +482,12 @@ def assert_http_action_api(root: Path) -> None:
         assert heartbeat_goal_applied["proposal"]["receipt"]["child_gate"]["kind"] == "host_activation_required"
         steps = heartbeat_goal_applied["proposal"]["receipt"]["step_receipts"]
         assert "goal_bootstrapped" in steps and "heartbeat_gate_ready" in steps, steps
-        assert any(goal["id"] == "scheduled-goal" for goal in json.loads(registry_path.read_text())["goals"])
+        scheduled_goal = next(
+            goal
+            for goal in json.loads(registry_path.read_text())["goals"]
+            if goal["id"] == "scheduled-goal"
+        )
+        assert scheduled_goal["coordination"]["write_scope"] == [], scheduled_goal
 
         code, unavailable_agent = request_json(
             f"{base_url}/api/actions/preview",
