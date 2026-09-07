@@ -67,6 +67,9 @@ const oneShotGoal = routeWorkspaceInput("Create a Goal without Heartbeat", { ...
 equal(oneShotGoal.route, "typed_action", "an explicit one-shot Goal remains actionable");
 equal(oneShotGoal.actionKind, "goal.create", "an explicit one-shot Goal keeps the Goal action");
 equal(oneShotGoal.normalizedParameters.heartbeat_enabled, false, "English Goal can explicitly omit Heartbeat");
+const chineseOneShotGoal = routeWorkspaceInput("创建 Goal，不开启 Heartbeat", { ...goalContext, goalId: null });
+equal(chineseOneShotGoal.route, "typed_action", "an explicit Chinese one-shot Goal remains actionable");
+equal(chineseOneShotGoal.normalizedParameters.heartbeat_enabled, false, "Chinese Goal can explicitly omit Heartbeat");
 const continuousGoal = routeWorkspaceInput("Create a Goal with a daily Heartbeat", { ...goalContext, goalId: null });
 equal(continuousGoal.route, "typed_action", "an explicit continuous Goal remains actionable");
 equal(continuousGoal.actionKind, "goal.create", "an explicit continuous Goal keeps the Goal action");

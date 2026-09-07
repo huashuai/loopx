@@ -301,7 +301,7 @@ async function main() {
     await page.getByText("SSH 隧道 · 可创建 Goal", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
     await page.getByRole("button", { name: "创建 Goal" }).first().click();
     const composer = page.getByRole("textbox", { name: "发送消息" });
-    await composer.fill("我想创建一个长期 Goal：\n目标：https://jira.example.test/browse/PROJECT-123\n完成标准：创建 PR");
+    await composer.fill("我想创建一个长期 Goal：\n目标：https://jira.example.test/browse/PROJECT-123\n完成标准：创建 PR\n继续方式：不开启 Heartbeat");
     await composer.press("Control+Enter");
     await page.getByText("确认执行", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
     const confirmationCard = page.locator(".personal-confirmation-card");
