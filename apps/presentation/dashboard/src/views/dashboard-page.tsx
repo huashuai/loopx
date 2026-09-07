@@ -31,6 +31,7 @@ import {
 import {
   fetchPeriodicReportIndex,
   fetchPeriodicReportProjection,
+  revalidateMachineSourceBinding,
   periodicReportApiUrls,
   resolveLocalStatusUrl,
   scopedStatusUrl,
@@ -158,6 +159,7 @@ import {
 } from "../data/remote-goal-control";
 import {
   addSshTunnelStatusSource,
+  bindSshTunnelStatusSource,
   defaultLocalStatusSourceUrl,
   loadStatusSourceCatalog,
   localStatusSource,
@@ -3206,18 +3208,42 @@ export function DashboardPage() {
     setIsLoading(true);
     setLoadError(null);
     void (async () => {
-      if (options.ensureTunnel && nextSource.kind === "ssh_tunnel") {
-        const port = new URL(nextSource.statusUrl, window.location.href).port;
-        if (port) {
-          try {
-            await ensureSshSource(nextSource.label, port);
-          } catch {
-            // The tunnel may already exist; the status fetch reports the authoritative result.
-          }
+      let selectedSource = nextSource;
+      if (nextSource.kind === "ssh_tunnel") {
+        try {
+          const port = new URL(nextSource.statusUrl, window.location.href).port;
+          const sourceBinding = options.ensureTunnel && nextSource.sshHostAlias && port
+            ? (await ensureSshSource(nextSource.sshHostAlias, port)).sourceBinding
+            : await revalidateMachineSourceBinding(
+              nextSource,
+              window.location.href,
+              new AbortController().signal,
+              { allowFirstBinding: true },
+            );
+          if (statusRequestFenceRef.current.selectionRevision !== selectionRevision) return;
+          selectedSource = { ...nextSource, sourceBinding };
+          setStatusSourceCatalog((currentCatalog) => {
+            const nextCatalog = bindSshTunnelStatusSource(
+              currentCatalog,
+              nextSource.id,
+              sourceBinding,
+            );
+            try {
+              saveStatusSourceCatalog(window.localStorage, nextCatalog);
+            } catch {
+              // Private browsing may disable storage; the binding remains usable for this page session.
+            }
+            return nextCatalog;
+          });
+        } catch (error) {
+          if (statusRequestFenceRef.current.selectionRevision !== selectionRevision) return;
+          setLoadError(error instanceof Error ? error.message : String(error));
+          setIsLoading(false);
+          return;
         }
       }
       if (statusRequestFenceRef.current.selectionRevision !== selectionRevision) return;
-      await loadFromUrl(nextSource.statusUrl, { selectionRevision });
+      await loadFromUrl(selectedSource.statusUrl, { selectionRevision });
     })();
   }
 
@@ -3241,7 +3267,10 @@ export function DashboardPage() {
       ? `未切换到 ${requestedStatusUrl ?? "所选来源"}：${loadError}`
       : null,
     onAdd: (input) => {
-      const result = addSshTunnelStatusSource(statusSourceCatalog, input, window.location.href);
+      const result = addSshTunnelStatusSource(statusSourceCatalog, {
+        ...input,
+        sshHostAlias: input.ensureTunnel ? input.label : null,
+      }, window.location.href);
       if ("error" in result) return { error: result.error };
       persistStatusSourceCatalog(result.catalog);
       selectStatusSource(result.source, { ensureTunnel: input.ensureTunnel });
@@ -3255,7 +3284,7 @@ export function DashboardPage() {
     onSelect: (sourceId) => {
       const nextSource = statusSourceCatalog.sources.find((candidate) => candidate.id === sourceId);
       if (!nextSource) return;
-      selectStatusSource(nextSource, { ensureTunnel: nextSource.kind === "ssh_tunnel" });
+      selectStatusSource(nextSource, { ensureTunnel: Boolean(nextSource.sshHostAlias) });
     },
     onSelectAll: () => {
       invalidateCommittedMachine();
@@ -3335,14 +3364,40 @@ export function DashboardPage() {
     setLoadError(null);
     setGoalArchiveLoadState({ error: null, phase: "loading" });
     try {
-      const directory = await fetchWorkspaceDirectory(nextSource.statusUrl, window.location.href);
+      let selectedSource = nextSource;
+      if (nextSource.kind === "ssh_tunnel") {
+        const port = new URL(nextSource.statusUrl, window.location.href).port;
+        const sourceBinding = nextSource.sshHostAlias && port
+          ? (await ensureSshSource(nextSource.sshHostAlias, port)).sourceBinding
+          : await revalidateMachineSourceBinding(
+            nextSource,
+            window.location.href,
+            new AbortController().signal,
+          );
+        if (!statusRequestCanCommit(statusRequestFenceRef.current, request)) return;
+        selectedSource = { ...nextSource, sourceBinding };
+        setStatusSourceCatalog((currentCatalog) => {
+          const nextCatalog = bindSshTunnelStatusSource(
+            currentCatalog,
+            nextSource.id,
+            sourceBinding,
+          );
+          try {
+            saveStatusSourceCatalog(window.localStorage, nextCatalog);
+          } catch {
+            // Private browsing may disable storage; the binding remains usable for this page session.
+          }
+          return nextCatalog;
+        });
+      }
+      const directory = await fetchWorkspaceDirectory(selectedSource.statusUrl, window.location.href);
       if (!statusRequestCanCommit(statusRequestFenceRef.current, request)) return;
       const directoryGoal = directory?.goals.find((goal) => goal.id === ref.goalId);
       if (!directory || !directoryGoal) {
         throw new WorkspaceGoalSnapshotError(directory ? "scope" : "service");
       }
       const exactSnapshot = await fetchWorkspaceGoalSnapshot(
-        nextSource.statusUrl,
+        selectedSource.statusUrl,
         window.location.href,
         ref.goalId,
         directory.registry_revision,
@@ -3356,7 +3411,7 @@ export function DashboardPage() {
         snapshots: { [ref.goalId]: exactSnapshot },
       });
       const initial = directoryStatusPayload(directory);
-      if (!await commitLoadedStatus(nextSource.statusUrl, initial, request, {
+      if (!await commitLoadedStatus(selectedSource.statusUrl, initial, request, {
         registryRevision: directory.registry_revision,
         verifiedGoalIds: [ref.goalId],
       }, ref.goalId)) return;
@@ -3368,11 +3423,11 @@ export function DashboardPage() {
       const progressiveAbort = new AbortController();
       progressiveAbortRef.current = progressiveAbort;
       void loadWorkspaceGoalSnapshots(
-        nextSource.statusUrl,
+        selectedSource.statusUrl,
         window.location.href,
         remaining,
         (id, snapshot, error) => {
-          if (snapshot) verifyCommittedGoal(nextSource.statusUrl, request, directory.registry_revision, id);
+          if (snapshot) verifyCommittedGoal(selectedSource.statusUrl, request, directory.registry_revision, id);
           setProgress((current) => current ? {
             ...current,
             snapshots: snapshot ? { ...current.snapshots, [id]: snapshot } : current.snapshots,

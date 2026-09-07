@@ -1,6 +1,7 @@
 import {
   activeStatusSourceForUrl,
   addSshTunnelStatusSource,
+  bindSshTunnelStatusSource,
   defaultLocalStatusSourceUrl,
   emptyStatusSourceCatalog,
   loadStatusSourceCatalog,
@@ -60,6 +61,7 @@ assert("catalog" in added, "a valid tunnel source is accepted");
 equal(added.source.kind, "ssh_tunnel", "the source keeps its typed provider kind");
 equal(added.source.readOnly, true, "a tunneled source cannot inherit local write authority");
 equal(added.source.goalCreationRequested, false, "remote Goal creation requires a separate owner opt-in");
+equal(added.source.sourceBinding, null, "a new tunnel cannot render remote state before instance verification");
 equal(added.source.statusUrl, "http://localhost:8876/status.json", "the tunnel URL is canonicalized");
 equal(statusSourceForUrl(added.catalog, added.source.statusUrl, baseHref)?.id, added.source.id, "URL lookup preserves source identity");
 
@@ -91,7 +93,13 @@ equal(secondTunnel.catalog.sources.length, 3, "local and multiple SSH sources co
 assert(secondTunnel.source.id !== added.source.id, "each tunnel keeps an independent stable identity");
 
 const storage = new MemoryStorage();
-const requestedGoalCreation = setRemoteGoalCreationRequested(secondTunnel.catalog, added.source.id, true);
+const boundCatalog = bindSshTunnelStatusSource(secondTunnel.catalog, added.source.id, {
+  controlPlaneInstanceId: "remote-lab-instance",
+  schemaVersion: "ssh_source_binding_v1",
+});
+equal(boundCatalog.sources[1].sourceBinding?.controlPlaneInstanceId, "remote-lab-instance", "a verified instance is bound to exactly one catalog source");
+equal(boundCatalog.sources[2].sourceBinding, null, "binding one source never grants trust to another source");
+const requestedGoalCreation = setRemoteGoalCreationRequested(boundCatalog, added.source.id, true);
 equal(requestedGoalCreation.sources[1].goalCreationRequested, true, "the owner can opt one named source into remote Goal creation");
 equal(requestedGoalCreation.sources[2].goalCreationRequested, false, "the opt-in never grants another source write intent");
 saveStatusSourceCatalog(storage, requestedGoalCreation);
@@ -101,6 +109,7 @@ storage.setItem(statusSourceCatalogStorageKey, JSON.stringify(stored));
 const restored = loadStatusSourceCatalog(storage, baseHref);
 equal(restored.sources[1].readOnly, true, "persisted input cannot downgrade a tunnel to writable");
 equal(restored.sources[1].goalCreationRequested, true, "the explicit Goal-creation preference survives reload");
+equal(restored.sources[1].sourceBinding?.controlPlaneInstanceId, "remote-lab-instance", "the verified instance binding survives reload");
 deepEqual(
   remoteGoalCreationControlPresentation(true, "error"),
   { action: "retry", label: "retry" },

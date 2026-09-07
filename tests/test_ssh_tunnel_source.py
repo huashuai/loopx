@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 from unittest import mock
 from types import SimpleNamespace
 
@@ -13,20 +14,22 @@ def test_ensure_ssh_source_opens_tunnel_and_returns_status_url() -> None:
     calls: list[list[str]] = []
     probe_count = 0
 
-    def fake_loopback(port: int, **kwargs: object) -> bool:
+    def fake_loopback(port: int, **kwargs: object) -> str | None:
         nonlocal probe_count
         probe_count += 1
-        return probe_count >= 2
+        return "ark-machine-instance" if probe_count >= 2 else None
 
     with mock.patch(
         "loopx.control_plane.status.ssh_tunnel.configured_ssh_host_aliases",
         return_value=["ark-devbox"],
     ), mock.patch(
-        "loopx.control_plane.status.ssh_tunnel._loopback_control_ok", fake_loopback
+        "loopx.control_plane.status.ssh_tunnel._loopback_control_identity",
+        fake_loopback,
     ), mock.patch(
         "loopx.control_plane.status.ssh_tunnel._loopback_status_ok", return_value=False
     ), mock.patch(
-        "loopx.control_plane.status.ssh_tunnel._remote_control_ok", return_value=True
+        "loopx.control_plane.status.ssh_tunnel._remote_control_identity",
+        return_value="ark-machine-instance",
     ), mock.patch(
         "loopx.control_plane.status.ssh_tunnel.subprocess.run",
         side_effect=lambda args, **kwargs: calls.append(list(args)),
@@ -39,6 +42,10 @@ def test_ensure_ssh_source_opens_tunnel_and_returns_status_url() -> None:
         "control_url": "http://127.0.0.1:8877",
         "tunnel_required": True,
         "remote_started": False,
+        "source_binding": {
+            "schema_version": "ssh_source_binding_v1",
+            "control_plane_instance_id": "ark-machine-instance",
+        },
     }
     tunnel_call = calls[0]
     assert tunnel_call[0] == "ssh"
@@ -52,20 +59,22 @@ def test_ensure_ssh_source_opens_tunnel_and_returns_status_url() -> None:
 def test_ensure_ssh_source_starts_remote_control_plane_when_missing() -> None:
     probe_count = 0
 
-    def fake_loopback(port: int, **kwargs: object) -> bool:
+    def fake_loopback(port: int, **kwargs: object) -> str | None:
         nonlocal probe_count
         probe_count += 1
-        return probe_count >= 4
+        return "ark-machine-instance" if probe_count >= 3 else None
 
     with mock.patch(
         "loopx.control_plane.status.ssh_tunnel.configured_ssh_host_aliases",
         return_value=["ark-devbox"],
     ), mock.patch(
-        "loopx.control_plane.status.ssh_tunnel._loopback_control_ok", fake_loopback
+        "loopx.control_plane.status.ssh_tunnel._loopback_control_identity",
+        fake_loopback,
     ), mock.patch(
         "loopx.control_plane.status.ssh_tunnel._loopback_status_ok", return_value=False
     ), mock.patch(
-        "loopx.control_plane.status.ssh_tunnel._remote_control_ok", return_value=False
+        "loopx.control_plane.status.ssh_tunnel._remote_control_identity",
+        side_effect=[None, "ark-machine-instance"],
     ), mock.patch(
         "loopx.control_plane.status.ssh_tunnel._start_remote_control", return_value=None
     ) as start_remote, mock.patch(
@@ -82,13 +91,69 @@ def test_ensure_ssh_source_rejects_a_legacy_status_only_tunnel() -> None:
         "loopx.control_plane.status.ssh_tunnel.configured_ssh_host_aliases",
         return_value=["ark-devbox"],
     ), mock.patch(
-        "loopx.control_plane.status.ssh_tunnel._loopback_control_ok", return_value=False
+        "loopx.control_plane.status.ssh_tunnel._loopback_control_identity",
+        return_value=None,
     ), mock.patch(
         "loopx.control_plane.status.ssh_tunnel._loopback_status_ok", return_value=True
     ), mock.patch("loopx.control_plane.status.ssh_tunnel.subprocess.run") as run:
         with pytest.raises(ValueError, match="status-only"):
             ensure_ssh_source("ark-devbox", 8877)
 
+    run.assert_not_called()
+
+
+def test_ensure_ssh_source_reuses_only_the_requested_remote_instance() -> None:
+    with mock.patch(
+        "loopx.control_plane.status.ssh_tunnel.configured_ssh_host_aliases",
+        return_value=["ark-devbox"],
+    ), mock.patch(
+        "loopx.control_plane.status.ssh_tunnel._loopback_control_identity",
+        return_value="other-machine-instance",
+    ), mock.patch(
+        "loopx.control_plane.status.ssh_tunnel._remote_control_identity",
+        return_value="ark-machine-instance",
+    ), mock.patch("loopx.control_plane.status.ssh_tunnel.subprocess.run") as run:
+        with pytest.raises(ValueError, match="different SSH source"):
+            ensure_ssh_source("ark-devbox", 8877)
+
+    run.assert_not_called()
+
+
+def test_ensure_ssh_source_reports_unverifiable_remote_without_claiming_mismatch() -> None:
+    with mock.patch(
+        "loopx.control_plane.status.ssh_tunnel.configured_ssh_host_aliases",
+        return_value=["ark-devbox"],
+    ), mock.patch(
+        "loopx.control_plane.status.ssh_tunnel._loopback_control_identity",
+        return_value="occupied-port-instance",
+    ), mock.patch(
+        "loopx.control_plane.status.ssh_tunnel._remote_control_identity",
+        return_value=None,
+    ), mock.patch("loopx.control_plane.status.ssh_tunnel.subprocess.run") as run:
+        with pytest.raises(ConnectionError, match="could not verify"):
+            ensure_ssh_source("ark-devbox", 8877)
+
+    run.assert_not_called()
+
+
+def test_ensure_ssh_source_returns_the_verified_instance_binding() -> None:
+    with mock.patch(
+        "loopx.control_plane.status.ssh_tunnel.configured_ssh_host_aliases",
+        return_value=["ark-devbox"],
+    ), mock.patch(
+        "loopx.control_plane.status.ssh_tunnel._loopback_control_identity",
+        return_value="ark-machine-instance",
+    ), mock.patch(
+        "loopx.control_plane.status.ssh_tunnel._remote_control_identity",
+        return_value="ark-machine-instance",
+    ), mock.patch("loopx.control_plane.status.ssh_tunnel.subprocess.run") as run:
+        result = ensure_ssh_source("ark-devbox", 8877)
+
+    assert result["source_binding"] == {
+        "schema_version": "ssh_source_binding_v1",
+        "control_plane_instance_id": "ark-machine-instance",
+    }
+    assert result["tunnel_required"] is False
     run.assert_not_called()
 
 
@@ -159,4 +224,19 @@ def test_ssh_source_request_mixin_rejects_non_loopback_server() -> None:
     assert handler.payloads == []
     assert handler.errors == [
         ("SSH source management requires a loopback LoopX Chat server.", 403)
+    ]
+
+
+def test_ssh_source_request_mixin_returns_bootstrap_failure_without_dropping_connection() -> None:
+    handler = _SshSourceHandler()
+
+    with mock.patch(
+        "loopx.chat_ssh_source_api.ensure_ssh_source",
+        side_effect=subprocess.CalledProcessError(1, ["ssh"]),
+    ):
+        handler._ssh_source_ensure()
+
+    assert handler.payloads == []
+    assert handler.errors == [
+        ("Could not start the remote LoopX control plane for this SSH source.", 502)
     ]

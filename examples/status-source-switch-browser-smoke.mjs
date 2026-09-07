@@ -89,14 +89,21 @@ async function main() {
       ["8766", statusPayload("local-goal", "Local Goal Only")],
       ["8876", statusPayload("remote-a-goal", "Remote A Goal Only")],
       ["8976", statusPayload("remote-b-goal", "Remote B Goal Only")],
+      ["9076", statusPayload("crossed-goal", "Wrong Machine Goal")],
     ]);
 
     await page.addInitScript(() => {
       localStorage.setItem("loopx-status-source-catalog-v1", JSON.stringify({
         schemaVersion: 1,
         sources: [
-          { kind: "ssh_tunnel", label: "Remote A", statusUrl: "http://127.0.0.1:8876/status.json" },
-          { kind: "ssh_tunnel", label: "Remote B", statusUrl: "http://127.0.0.1:8976/status.json" },
+          { kind: "ssh_tunnel", label: "Remote A", sshHostAlias: "remote-a", statusUrl: "http://127.0.0.1:8876/status.json" },
+          { kind: "ssh_tunnel", label: "Remote B", sshHostAlias: "remote-b", statusUrl: "http://127.0.0.1:8976/status.json" },
+          {
+            kind: "ssh_tunnel",
+            label: "Crossed manual source",
+            sourceBinding: { controlPlaneInstanceId: "expected-manual-instance", schemaVersion: "ssh_source_binding_v1" },
+            statusUrl: "http://127.0.0.1:9076/status.json",
+          },
         ],
       }));
     });
@@ -112,7 +119,16 @@ async function main() {
       await state.ensureGates.get(host);
       await route.fulfill({
         contentType: "application/json",
-        json: { ok: true, remote_started: true, status_url: `http://127.0.0.1:${body.local_port}/status.json`, tunnel_required: true },
+        json: {
+          ok: true,
+          remote_started: true,
+          source_binding: {
+            control_plane_instance_id: `${host}-instance`,
+            schema_version: "ssh_source_binding_v1",
+          },
+          status_url: `http://127.0.0.1:${body.local_port}/status.json`,
+          tunnel_required: true,
+        },
         status: 200,
       });
     });
@@ -128,6 +144,16 @@ async function main() {
     await installStatusRoute("http://127.0.0.1:8766/status.json", "8766");
     await installStatusRoute("http://127.0.0.1:8876/status.json", "8876");
     await installStatusRoute("http://127.0.0.1:8976/status.json", "8976");
+    await installStatusRoute("http://127.0.0.1:9076/status.json", "9076");
+    await page.route("http://127.0.0.1:9076/api/chat/capabilities", (route) => route.fulfill({
+      contentType: "application/json",
+      json: {
+        control_plane_instance_id: "wrong-manual-instance",
+        ok: true,
+        schema_version: "loopx_chat_capabilities_v1",
+      },
+      status: 200,
+    }));
     await page.route("http://127.0.0.1:8876/api/chat/capabilities", (route) => route.fulfill({
       contentType: "application/json",
       json: {
@@ -211,8 +237,8 @@ async function main() {
     state.statusRequestsByPort.set("8876", 0);
     const remoteAEnsureGate = deferred();
     const remoteAEnsureStarted = deferred();
-    state.ensureGates.set("Remote A", remoteAEnsureGate.promise);
-    state.ensureStartedByHost.set("Remote A", remoteAEnsureStarted.resolve);
+    state.ensureGates.set("remote-a", remoteAEnsureGate.promise);
+    state.ensureStartedByHost.set("remote-a", remoteAEnsureStarted.resolve);
     await selectSource(page, sourceSelect, "Remote A");
     await remoteAEnsureStarted.promise;
     await selectSource(page, sourceSelect, "本机");
@@ -239,6 +265,19 @@ async function main() {
     if (state.localActionRequests.length !== 0) throw new Error(`Remote Goal creation hit the local control plane: ${state.localActionRequests.join(", ")}`);
     if (!state.remoteActionRequests.every((request) => request.headers["x-loopx-control-plane-instance"] === "remote-a-instance")) {
       throw new Error("Remote Goal creation did not pin the capability-handshake instance");
+    }
+
+    const crossedCapabilityResponse = page.waitForResponse(
+      (response) => response.url() === "http://127.0.0.1:9076/api/chat/capabilities",
+    );
+    await selectSource(page, sourceSelect, "Crossed manual source");
+    await crossedCapabilityResponse;
+    await page.evaluate(() => new Promise((resolveFrame) => requestAnimationFrame(() => requestAnimationFrame(resolveFrame))));
+    if ((state.statusRequestsByPort.get("9076") ?? 0) !== 0) {
+      throw new Error("Selecting a crossed manual source rebound it to the wrong control plane");
+    }
+    if (await page.getByText("Wrong Machine Goal", { exact: true }).count()) {
+      throw new Error("A crossed manual source rendered the wrong machine");
     }
     await page.screenshot({ path: resolve(outputDir, "local-after-races.png"), fullPage: false, animations: "disabled" });
     console.log(`status source switch browser smoke (${packaged ? "packaged" : "development"}): ok`);

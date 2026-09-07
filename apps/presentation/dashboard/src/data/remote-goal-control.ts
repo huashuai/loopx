@@ -38,6 +38,10 @@ export async function connectRemoteGoalControl(
   ) {
     throw new Error("The selected remote control plane does not advertise instance-bound goal.create support.");
   }
+  if (!source.sourceBinding
+      || source.sourceBinding.controlPlaneInstanceId !== capabilities.control_plane_instance_id) {
+    throw new Error("The selected remote source binding changed; reconnect before creating a Goal.");
+  }
   return {
     capabilities,
     sourceId: source.id,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from typing import Any
 
 from .control_plane.status.ssh_tunnel import ensure_ssh_source
@@ -46,5 +47,11 @@ class SshSourceRequestMixin:
             )
         except (ValueError, TypeError) as exc:
             self._send_error(str(exc), status=400)
+            return
+        except (OSError, subprocess.SubprocessError):
+            self._send_error(
+                "Could not start the remote LoopX control plane for this SSH source.",
+                status=502,
+            )
             return
         self._send_json(result)
