@@ -1479,7 +1479,7 @@ def serve_chat(
         claude_bin=claude_bin,
         startup_timeout_sec=startup_timeout_sec,
         idle_timeout_sec=idle_timeout_sec,
-        hard_timeout_sec=hard_timeout_sec,
+        hard_timeout_sec=hard_timeout_sec, registry_path=server.registry_path,
     )
     server.action_service = ChatActionService(
         store=server.action_store,
