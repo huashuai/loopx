@@ -17,6 +17,7 @@ def _start_server() -> tuple[ChatHTTPServer, threading.Thread]:
     server.runtime_root_override = None
     server.scan_roots = []
     server.limit = 20
+    server.machine_id = "machine-cors-fixture"
     server.control_plane_instance_id = "control-plane-cors-fixture"
     server.runtime_controller = _RuntimeController()
     server.lark_cli_resolution = LarkCliResolution(
@@ -95,6 +96,7 @@ def test_chat_capabilities_expose_public_runtime_identity() -> None:
             "source_revision",
         }
         assert payload["control_plane_instance_id"] == "control-plane-cors-fixture"
+        assert payload["machine_id"] == "machine-cors-fixture"
         assert payload["remote_goal_creation"] == "preview_locked_instance_bound"
     finally:
         server.shutdown()

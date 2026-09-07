@@ -126,6 +126,7 @@ async function main() {
     const payloads = new Map([
       ["local", statusPayload("This machine")],
       ["remote-a", statusPayload("Remote A")],
+      ["remote-restarted", statusPayload("Restarted source")],
       ["remote-unbound", statusPayload("Unbound source")],
     ]);
     const requestLedger = [];
@@ -144,20 +145,26 @@ async function main() {
           {
             kind: "ssh_tunnel",
             label: "Remote A",
-            sourceBinding: { controlPlaneInstanceId: "remote-a-instance", schemaVersion: "ssh_source_binding_v1" },
+            sourceBinding: { machineId: "remote-a-machine", controlPlaneInstanceId: "remote-a-instance", schemaVersion: "ssh_source_binding_v2" },
             statusUrl: "http://127.0.0.1:8876/status.json",
           },
           {
             kind: "ssh_tunnel",
             label: "Remote B",
-            sourceBinding: { controlPlaneInstanceId: "remote-b-instance", schemaVersion: "ssh_source_binding_v1" },
+            sourceBinding: { machineId: "remote-b-machine", controlPlaneInstanceId: "remote-b-instance", schemaVersion: "ssh_source_binding_v2" },
             statusUrl: "http://127.0.0.1:8976/status.json",
           },
           {
             kind: "ssh_tunnel",
             label: "Crossed source",
-            sourceBinding: { controlPlaneInstanceId: "remote-c-original", schemaVersion: "ssh_source_binding_v1" },
+            sourceBinding: { machineId: "remote-c-machine", controlPlaneInstanceId: "remote-c-instance", schemaVersion: "ssh_source_binding_v2" },
             statusUrl: "http://127.0.0.1:9076/status.json",
+          },
+          {
+            kind: "ssh_tunnel",
+            label: "Restarted source",
+            sourceBinding: { machineId: "remote-restarted-machine", controlPlaneInstanceId: "remote-restarted-old-instance", schemaVersion: "ssh_source_binding_v2" },
+            statusUrl: "http://127.0.0.1:9276/status.json",
           },
           {
             kind: "ssh_tunnel",
@@ -178,24 +185,29 @@ async function main() {
     });
     await page.route("http://127.0.0.1:8876/api/chat/capabilities", (route) => route.fulfill({
       contentType: "application/json",
-      json: { control_plane_instance_id: "remote-a-instance", ok: true, schema_version: "loopx_chat_capabilities_v1" },
+      json: { machine_id: "remote-a-machine", control_plane_instance_id: "remote-a-instance", ok: true, schema_version: "loopx_chat_capabilities_v1" },
       status: 200,
     }));
     await page.route("http://127.0.0.1:8976/api/chat/capabilities", (route) => route.fulfill({
       contentType: "application/json",
-      json: { control_plane_instance_id: "remote-b-instance", ok: true, schema_version: "loopx_chat_capabilities_v1" },
+      json: { machine_id: "remote-b-machine", control_plane_instance_id: "remote-b-instance", ok: true, schema_version: "loopx_chat_capabilities_v1" },
       status: 200,
     }));
     await page.route("http://127.0.0.1:9076/api/chat/capabilities", (route) => route.fulfill({
       contentType: "application/json",
-      json: { control_plane_instance_id: "remote-c-wrong", ok: true, schema_version: "loopx_chat_capabilities_v1" },
+      json: { machine_id: "wrong-machine-id", control_plane_instance_id: "remote-c-instance", ok: true, schema_version: "loopx_chat_capabilities_v1" },
+      status: 200,
+    }));
+    await page.route("http://127.0.0.1:9276/api/chat/capabilities", (route) => route.fulfill({
+      contentType: "application/json",
+      json: { machine_id: "remote-restarted-machine", control_plane_instance_id: "remote-restarted-new-instance", ok: true, schema_version: "loopx_chat_capabilities_v1" },
       status: 200,
     }));
     await page.route("http://127.0.0.1:9176/api/chat/capabilities", (route) => {
       unboundRequestLedger.push("capabilities");
       return route.fulfill({
         contentType: "application/json",
-        json: { control_plane_instance_id: "remote-unbound-instance", ok: true, schema_version: "loopx_chat_capabilities_v1" },
+        json: { machine_id: "remote-unbound-machine", control_plane_instance_id: "remote-unbound-instance", ok: true, schema_version: "loopx_chat_capabilities_v1" },
         status: 200,
       });
     });
@@ -221,6 +233,7 @@ async function main() {
     await page.route(`${appOrigin}/status.json*`, (route) => serveStatus(route, "local"));
     await page.route("http://127.0.0.1:8876/status.json*", (route) => serveStatus(route, "remote-a"));
     await page.route("http://127.0.0.1:8976/status.json*", (route) => serveStatus(route, "remote-b"));
+    await page.route("http://127.0.0.1:9276/status.json*", (route) => serveStatus(route, "remote-restarted"));
     await page.route("http://127.0.0.1:9076/status.json*", (route) => {
       crossedStatusRequestCount += 1;
       return route.fulfill({ contentType: "application/json", json: statusPayload("Wrong machine"), status: 200 });
@@ -245,6 +258,8 @@ async function main() {
       .locator("text=Unavailable").waitFor();
     await page.locator(".all-machines-health-row").filter({ hasText: "Crossed source" })
       .locator("text=Unavailable").waitFor();
+    await page.locator(".all-machines-health-row").filter({ hasText: "Restarted source" })
+      .locator("text=Healthy").waitFor();
     const unboundRow = page.locator(".all-machines-health-row").filter({ hasText: "Unbound source" });
     await unboundRow.getByRole("button", { name: "Select Unbound source once to verify" }).waitFor();
     if (unboundStatusRequestCount) {
@@ -254,9 +269,10 @@ async function main() {
       throw new Error("A binding-mismatched source rendered status from another machine");
     }
     const sharedRows = page.locator(".all-machines-goal-row").filter({ hasText: "Shared Goal" });
-    if (await sharedRows.count() !== 2) throw new Error("Same-id Goals on two machines were deduplicated");
+    if (await sharedRows.count() !== 3) throw new Error("Same-id Goals on healthy machines were deduplicated");
     if (await sharedRows.filter({ hasText: "本机" }).count() !== 1) throw new Error("The local Goal lost its source namespace");
     if (await sharedRows.filter({ hasText: "Remote A" }).count() !== 1) throw new Error("The remote Goal lost its source namespace");
+    if (await sharedRows.filter({ hasText: "Restarted source" }).count() !== 1) throw new Error("The restarted machine Goal lost its source namespace");
     if (await page.getByRole("button", { name: "Create Goal" }).count()) throw new Error("All machines exposed a write affordance");
     if (requestLedger.some((request) => request.method !== "GET")) throw new Error("All machines issued a non-GET status request");
     if (ensureRequestCount) throw new Error("All machines implicitly started an SSH tunnel");
@@ -305,8 +321,9 @@ async function main() {
       const catalog = JSON.parse(localStorage.getItem("loopx-status-source-catalog-v1") ?? "{}");
       return catalog.sources?.find((source) => source.label === "Unbound source")?.sourceBinding ?? null;
     });
-    if (storedBinding?.controlPlaneInstanceId !== "remote-unbound-instance") {
-      throw new Error("Explicit source verification did not persist the observed machine identity");
+    if (storedBinding?.machineId !== "remote-unbound-machine"
+        || storedBinding?.controlPlaneInstanceId !== "remote-unbound-instance") {
+      throw new Error("Explicit source verification did not persist separate machine and process identities");
     }
     if (unboundStatusRequestCount < 1
         || unboundRequestLedger[0] !== "capabilities"

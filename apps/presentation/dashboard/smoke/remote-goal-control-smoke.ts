@@ -33,8 +33,9 @@ const source: StatusSource = {
   label: "Remote lab",
   readOnly: true,
   sourceBinding: {
+    machineId: "machine-fixture",
     controlPlaneInstanceId: "control-plane-fixture",
-    schemaVersion: "ssh_source_binding_v1",
+    schemaVersion: "ssh_source_binding_v2",
   },
   statusUrl: "http://127.0.0.1:8876/status.json",
 };
@@ -53,6 +54,7 @@ const capabilities = {
     release_id: "release-fixture",
     source_revision: "revision-fixture",
   },
+  machine_id: "machine-fixture",
   control_plane_instance_id: "control-plane-fixture",
   remote_goal_creation: "preview_locked_instance_bound" as const,
   typed_actions: true,
@@ -75,6 +77,19 @@ await rejects(
   () => connectRemoteGoalControl(source, async () => ({ ...capabilities, action_kinds: ["todo.create"] })),
   /goal\.create/i,
   "a remote service must explicitly advertise Goal creation",
+);
+await rejects(
+  () => connectRemoteGoalControl(source, async () => ({ ...capabilities, machine_id: "another-machine" })),
+  /source binding changed/i,
+  "write preparation rejects a different stable machine even when the process id matches",
+);
+await rejects(
+  () => connectRemoteGoalControl(source, async () => ({
+    ...capabilities,
+    control_plane_instance_id: "restarted-process",
+  })),
+  /source binding changed/i,
+  "write preparation requires revalidation after the owning machine process restarts",
 );
 
 const requests: Array<{ body: Record<string, unknown>; headers: Headers; method: string; url: string }> = [];
