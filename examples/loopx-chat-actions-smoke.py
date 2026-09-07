@@ -394,6 +394,9 @@ def assert_http_action_api(root: Path) -> None:
         assert goal_resources["session_id"], goal_resources
         assert goal_resources["turn_id"], goal_resources
         assert runtime_controller.opened_sessions[-1]["goal_id"] == "new-goal"
+        assert runtime_controller.opened_sessions[-1]["channel_id"] == (
+            f"task.{goal_resources['todo_ids'][0]}"
+        )
         assert runtime_controller.submissions[-1]["session_id"] == goal_resources["session_id"]
         first_turn_packet = managed_goal_first_turn_packet(
             runtime_controller.submissions[-1]["message"]
