@@ -41,6 +41,7 @@ from .control_plane.status.ssh_host_catalog import (
     SSH_HOST_CATALOG_PATH,
     ssh_host_catalog_payload,
 )
+from .control_plane.status.machine_identity import load_or_create_machine_identity
 from .chat_lark_api import (
     LarkChatRequestMixin,
     build_goal_repository_contexts as build_goal_repository_contexts,
@@ -1274,6 +1275,7 @@ class ChatRequestHandler(
                 "ok": True,
                 "schema_version": "loopx_chat_capabilities_v1",
                 "runtime_identity": release_runtime_identity(),
+                "machine_id": self.server.machine_id,
                 "control_plane_instance_id": self.server.control_plane_instance_id,
                 "remote_goal_creation": "preview_locked_instance_bound",
                 "agent_backend": "multi_adapter",
@@ -1444,6 +1446,7 @@ def serve_chat(
         explicit=lark_cli_bin,
     )
     server = ChatHTTPServer((host, port), ChatRequestHandler)
+    server.machine_id = load_or_create_machine_identity(runtime_root)["machine_id"]
     server.control_plane_instance_id = new_control_plane_instance_id()
     server.registry_path = resolved_registry_path
     server.runtime_root = runtime_root
@@ -1455,9 +1458,7 @@ def serve_chat(
     server.assets_dir = resolved_assets
     server.verbose = verbose
     server.ssh_config_path = None
-    server.goal_subagent_configuration_enabled = (
-        enable_goal_subagent_configuration
-    )
+    server.goal_subagent_configuration_enabled = enable_goal_subagent_configuration
     server.lark_cli_resolution = lark_cli_resolution
     server.lark_runner = build_lark_command_runner(server.lark_cli_resolution)
     server.lark_app_setup_manager = LarkAppSetupManager(

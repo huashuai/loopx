@@ -32,6 +32,7 @@ export async function connectRemoteGoalControl(
   if (
     capabilities.schema_version !== "loopx_chat_capabilities_v1"
     || capabilities.remote_goal_creation !== "preview_locked_instance_bound"
+    || !capabilities.machine_id
     || !capabilities.control_plane_instance_id
     || capabilities.typed_actions !== true
     || !capabilities.action_kinds?.includes("goal.create")
@@ -39,6 +40,7 @@ export async function connectRemoteGoalControl(
     throw new Error("The selected remote control plane does not advertise instance-bound goal.create support.");
   }
   if (!source.sourceBinding
+      || source.sourceBinding.machineId !== capabilities.machine_id
       || source.sourceBinding.controlPlaneInstanceId !== capabilities.control_plane_instance_id) {
     throw new Error("The selected remote source binding changed; reconnect before creating a Goal.");
   }

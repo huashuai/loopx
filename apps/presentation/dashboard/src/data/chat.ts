@@ -112,6 +112,7 @@ export const chatCapabilitiesSchema = z.object({
     release_id: z.string().nullable(),
     source_revision: z.string().nullable(),
   }).optional(),
+  machine_id: z.string().min(1).optional(),
   control_plane_instance_id: z.string().min(1).optional(),
   remote_goal_creation: z.literal("preview_locked_instance_bound").optional(),
   agent_backend: z.string(),

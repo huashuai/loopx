@@ -121,15 +121,19 @@ export async function fetchMachineSourceBinding(
   }
   if (!response.ok) throw new MachineStatusLoadError("binding_unavailable");
   const payload = await response.json().catch(() => null) as Record<string, unknown> | null;
+  const machineId = payload?.machine_id;
   const instanceId = payload?.control_plane_instance_id;
   if (payload?.schema_version !== "loopx_chat_capabilities_v1"
+      || typeof machineId !== "string"
+      || !machineId
       || typeof instanceId !== "string"
       || !instanceId) {
     throw new MachineStatusLoadError("binding_unavailable");
   }
   return {
+    machineId,
     controlPlaneInstanceId: instanceId,
-    schemaVersion: "ssh_source_binding_v1",
+    schemaVersion: "ssh_source_binding_v2",
   };
 }
 
@@ -145,7 +149,7 @@ export async function revalidateMachineSourceBinding(
   }
   const observedBinding = await fetchMachineSourceBinding(source, baseHref, signal);
   if (source.sourceBinding
-      && observedBinding.controlPlaneInstanceId !== source.sourceBinding.controlPlaneInstanceId) {
+      && observedBinding.machineId !== source.sourceBinding.machineId) {
     throw new MachineStatusLoadError("binding_mismatch");
   }
   return observedBinding;
