@@ -44,6 +44,7 @@ function managerProjectionIntent(message: string) {
 }
 
 function heartbeatPreference(message: string): boolean | null {
+  if (/(?:不(?:开启|启用)).{0,10}(?:heartbeat|心跳)|(?:heartbeat|心跳).{0,10}(?:不(?:开启|启用))/iu.test(message)) return false;
   if (negates(message, /heartbeat|心跳/iu)) return false;
   if (/(heartbeat|心跳|每天推进|持续推进|daily progress)/iu.test(message)) return true;
   return null;
