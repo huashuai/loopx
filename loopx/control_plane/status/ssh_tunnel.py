@@ -47,27 +47,35 @@ def _loopback_status_ok(port: int, *, timeout: float = 8.0) -> bool:
         return False
 
 
-def _loopback_control_ok(port: int, *, timeout: float = 8.0) -> bool:
+def _control_instance_id(payload: object) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    instance_id = payload.get("control_plane_instance_id")
+    if (
+        payload.get("schema_version") != "loopx_chat_capabilities_v1"
+        or payload.get("remote_goal_creation")
+        != "preview_locked_instance_bound"
+        or not isinstance(instance_id, str)
+        or not instance_id
+    ):
+        return None
+    return instance_id
+
+
+def _loopback_control_identity(port: int, *, timeout: float = 8.0) -> str | None:
     try:
         with urllib.request.urlopen(
             f"http://127.0.0.1:{port}/api/chat/capabilities", timeout=timeout
         ) as response:
             payload = json.loads(response.read().decode("utf-8"))
-            status = response.status
-        return (
-            status == 200
-            and isinstance(payload, dict)
-            and payload.get("schema_version") == "loopx_chat_capabilities_v1"
-            and payload.get("remote_goal_creation")
-            == "preview_locked_instance_bound"
-            and isinstance(payload.get("control_plane_instance_id"), str)
-            and bool(payload["control_plane_instance_id"])
-        )
+            if response.status != 200:
+                return None
+        return _control_instance_id(payload)
     except (OSError, ValueError, json.JSONDecodeError, urllib.error.URLError):
-        return False
+        return None
 
 
-def _remote_control_ok(alias: str, *, timeout: float = 5.0) -> bool:
+def _remote_control_identity(alias: str, *, timeout: float = 5.0) -> str | None:
     try:
         result = subprocess.run(
             [
@@ -75,15 +83,20 @@ def _remote_control_ok(alias: str, *, timeout: float = 5.0) -> bool:
                 "-o",
                 "ConnectTimeout=3",
                 alias,
-                "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8767/api/chat/capabilities",
+                "curl -fsS --max-time 4 http://127.0.0.1:8767/api/chat/capabilities",
             ],
             capture_output=True,
             text=True,
             timeout=timeout,
         )
     except (OSError, subprocess.TimeoutExpired):
-        return False
-    return result.returncode == 0 and result.stdout.strip().endswith("200")
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        return _control_instance_id(json.loads(result.stdout))
+    except (ValueError, json.JSONDecodeError):
+        return None
 
 
 def _start_remote_control(alias: str) -> None:
@@ -114,8 +127,21 @@ def ensure_ssh_source(
     ):
         raise ValueError("local tunnel port must be an integer in 1024..65535")
 
-    tunnel_required = not _loopback_control_ok(local_port)
-    if tunnel_required and _loopback_status_ok(local_port):
+    local_identity = _loopback_control_identity(local_port)
+    tunnel_required = local_identity is None
+    if local_identity is not None:
+        remote_identity = _remote_control_identity(alias)
+        if remote_identity is None:
+            raise ConnectionError(
+                f"could not verify SSH source {alias}; "
+                "check that the host is reachable and its LoopX control plane is running"
+            )
+        if remote_identity != local_identity:
+            raise ValueError(
+                f"local port {local_port} is bound to a different SSH source; "
+                "close that tunnel or choose another port"
+            )
+    elif _loopback_status_ok(local_port):
         raise ValueError(
             f"local port {local_port} serves a legacy status-only LoopX tunnel; "
             "close it or choose another port before enabling remote Goal creation"
@@ -140,22 +166,36 @@ def ensure_ssh_source(
         )
         deadline = time.monotonic() + wait_seconds
         while time.monotonic() < deadline:
-            if _loopback_control_ok(local_port):
+            local_identity = _loopback_control_identity(local_port)
+            if local_identity is not None:
                 break
             time.sleep(0.25)
-        if not _loopback_control_ok(local_port):
-            if not _remote_control_ok(alias):
+        if local_identity is None:
+            remote_identity = _remote_control_identity(alias)
+            if remote_identity is None:
                 _start_remote_control(alias)
                 remote_started = True
             deadline = time.monotonic() + wait_seconds
             while time.monotonic() < deadline:
-                if _loopback_control_ok(local_port):
+                local_identity = _loopback_control_identity(local_port)
+                if local_identity is not None:
                     break
                 time.sleep(0.25)
 
-    if not _loopback_control_ok(local_port):
-        raise ValueError(
+    if local_identity is None:
+        raise ConnectionError(
             f"SSH control-plane source is not reachable: http://127.0.0.1:{local_port}"
+        )
+    remote_identity = _remote_control_identity(alias)
+    if remote_identity is None:
+        raise ConnectionError(
+            f"could not verify SSH source {alias}; "
+            "check that the host is reachable and its LoopX control plane is running"
+        )
+    if remote_identity != local_identity:
+        raise ValueError(
+            f"local port {local_port} is bound to a different SSH source; "
+            "close that tunnel or choose another port"
         )
 
     return {
@@ -164,4 +204,8 @@ def ensure_ssh_source(
         "control_url": f"http://127.0.0.1:{local_port}",
         "tunnel_required": tunnel_required,
         "remote_started": remote_started,
+        "source_binding": {
+            "schema_version": "ssh_source_binding_v1",
+            "control_plane_instance_id": local_identity,
+        },
     }

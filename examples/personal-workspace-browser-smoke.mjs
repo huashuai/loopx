@@ -614,7 +614,16 @@ async function installApi(page, { goalSubagentConfigurationEnabled = true } = {}
   await page.route(`http://127.0.0.1:${port}/api/ssh-source/ensure`, async (route) => {
     await route.fulfill({
       contentType: "application/json",
-      json: { ok: true, status_url: "http://127.0.0.1:8876/status.json", tunnel_required: true, remote_started: true },
+      json: {
+        ok: true,
+        source_binding: {
+          control_plane_instance_id: "remote-lab-instance",
+          schema_version: "ssh_source_binding_v1",
+        },
+        status_url: "http://127.0.0.1:8876/status.json",
+        tunnel_required: true,
+        remote_started: true,
+      },
       status: 200,
     });
   });

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import statusExample from "../../../../examples/status.example.json";
 
 import {
   MACHINE_OBSERVATION_STALE_AFTER_MS,
@@ -23,6 +24,10 @@ import type {
 } from "../src/features/personal-workspace/personal-workspace-model";
 import type { StatusSource } from "../src/data/status-source-catalog";
 import {
+  fetchMachineStatusPayload,
+  MachineStatusLoadError,
+} from "../src/data/local-status-query";
+import {
   fetchWorkspaceGoalSnapshot,
   WorkspaceGoalSnapshotError,
 } from "../src/data/workspace-progressive-status";
@@ -36,6 +41,10 @@ function source(id: string, label: string, readOnly: boolean): StatusSource {
     kind: readOnly ? "ssh_tunnel" : "local",
     label,
     readOnly,
+    sourceBinding: readOnly ? {
+      controlPlaneInstanceId: `${id}-instance`,
+      schemaVersion: "ssh_source_binding_v1",
+    } : null,
     statusUrl: readOnly ? `http://127.0.0.1:${id === "remote-a" ? "8876" : "8976"}/status.json` : "/status.json",
   };
 }
@@ -148,6 +157,73 @@ const loading = buildAllMachinesOverview(new Map([
   [remoteA.id, observation(remoteA, null)],
 ] as const), now);
 assert.equal(loading.machines[0].health, "loading");
+
+async function sourceBindingContract() {
+  const originalFetch = globalThis.fetch;
+  const requestedUrls: string[] = [];
+  try {
+    globalThis.fetch = async (input) => {
+      const url = String(input);
+      requestedUrls.push(url);
+      if (url.endsWith("/api/chat/capabilities")) {
+        return new Response(JSON.stringify({
+          control_plane_instance_id: "wrong-machine-instance",
+          ok: true,
+          schema_version: "loopx_chat_capabilities_v1",
+        }), { headers: { "content-type": "application/json" }, status: 200 });
+      }
+      return new Response(JSON.stringify(statusExample), {
+        headers: { "content-type": "application/json" },
+        status: 200,
+      });
+    };
+    await assert.rejects(
+      fetchMachineStatusPayload(remoteA, "http://127.0.0.1:5173/", new AbortController().signal),
+      (error) => error instanceof MachineStatusLoadError && error.code === "binding_mismatch",
+      "a source label cannot consume status from another control-plane instance",
+    );
+    assert.deepEqual(
+      requestedUrls,
+      ["http://127.0.0.1:8876/api/chat/capabilities"],
+      "binding mismatch fails before remote status is rendered",
+    );
+
+    requestedUrls.length = 0;
+    globalThis.fetch = async (input) => {
+      const url = String(input);
+      requestedUrls.push(url);
+      if (url.endsWith("/api/chat/capabilities")) {
+        return new Response(JSON.stringify({
+          control_plane_instance_id: remoteA.sourceBinding?.controlPlaneInstanceId,
+          ok: true,
+          schema_version: "loopx_chat_capabilities_v1",
+        }), { headers: { "content-type": "application/json" }, status: 200 });
+      }
+      return new Response(JSON.stringify(statusExample), {
+        headers: { "content-type": "application/json" },
+        status: 200,
+      });
+    };
+    const payload = await fetchMachineStatusPayload(
+      remoteA,
+      "http://127.0.0.1:5173/",
+      new AbortController().signal,
+    );
+    assert.equal(payload.ok, true);
+    assert.equal(requestedUrls.length, 2, "a matching instance binding admits one status read");
+
+    const unbound = { ...remoteA, sourceBinding: null };
+    requestedUrls.length = 0;
+    await assert.rejects(
+      fetchMachineStatusPayload(unbound, "http://127.0.0.1:5173/", new AbortController().signal),
+      (error) => error instanceof MachineStatusLoadError && error.code === "binding_required",
+      "legacy unbound sources fail closed until the owner revalidates them",
+    );
+    assert.equal(requestedUrls.length, 0, "an unbound source performs no remote request");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+}
 
 const terminal = buildAllMachinesOverview(new Map([
   [local.id, observation(local, {
@@ -280,9 +356,23 @@ async function loaderContract() {
   assert.equal(failed.get(remoteA.id)?.model?.goals[0].goalId, "retained");
   assert.equal(failed.get(remoteA.id)?.lastSuccessAt, now - 1_000);
   assert.equal(failed.get(remoteA.id)?.phase, "error");
+
+  const invalidatedBinding = applyMachineObservationUpdate(retained, remoteA.id, {
+    currentError: "binding_mismatch",
+    generation: 7,
+    lastAttemptAt: now,
+    model: null,
+    phase: "error",
+    source: remoteA,
+  }, 7);
+  assert.equal(
+    invalidatedBinding.get(remoteA.id)?.model,
+    null,
+    "an identity mismatch clears the prior machine projection instead of showing it under an invalid binding",
+  );
 }
 
-loaderContract().then(() => {
+Promise.all([loaderContract(), sourceBindingContract()]).then(() => {
   const snapshot = statusPayloadForGoal("goal-1", "revision-1");
   const requests: string[] = [];
   const originalFetch = globalThis.fetch;

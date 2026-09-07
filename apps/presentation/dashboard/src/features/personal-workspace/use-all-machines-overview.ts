@@ -20,7 +20,7 @@ export type MachineObservationUpdate = {
   phase: MachineObservation["phase"];
   lastAttemptAt: number;
   lastSuccessAt?: number;
-  model?: WorkspaceModel;
+  model?: WorkspaceModel | null;
   currentError?: string | null;
 };
 
@@ -38,7 +38,7 @@ export function applyMachineObservationUpdate(
     phase: update.phase,
     lastAttemptAt: update.lastAttemptAt,
     lastSuccessAt: update.lastSuccessAt ?? previous?.lastSuccessAt ?? null,
-    model: update.model ?? previous?.model ?? null,
+    model: update.model === undefined ? previous?.model ?? null : update.model,
     currentError: update.currentError ?? null,
   });
   return next;
@@ -87,12 +87,16 @@ export async function loadAllMachineSnapshots<T>(options: {
         });
       } catch (error) {
         if (options.signal.aborted) return;
+        const currentError = publicMachineLoadError(error);
         options.onObservation(source.id, {
           generation: options.generation,
           source,
           phase: "error",
           lastAttemptAt: now(),
-          currentError: publicMachineLoadError(error),
+          model: currentError === "binding_required" || currentError === "binding_mismatch"
+            ? null
+            : undefined,
+          currentError,
         });
       }
     }
@@ -116,7 +120,9 @@ export function useAllMachinesOverview(options: {
   buildModelRef.current = options.buildModel;
   const sourcesRef = useRef(options.sources);
   sourcesRef.current = options.sources;
-  const sourceSignature = options.sources.map((source) => `${source.id}:${source.statusUrl}`).join("|");
+  const sourceSignature = options.sources.map((source) => (
+    `${source.id}:${source.statusUrl}:${source.sourceBinding?.controlPlaneInstanceId ?? "unbound"}`
+  )).join("|");
 
   const refreshAll = useCallback(async () => {
     if (!options.enabled) return;

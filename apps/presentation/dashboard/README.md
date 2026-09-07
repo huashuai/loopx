@@ -289,11 +289,16 @@ Wildcard hosts, negated patterns, `IdentityFile`, `ProxyCommand`, hostnames,
 credentials, and config paths are never projected to the browser. The manual
 loopback-URL path remains available for custom forwarding setups.
 
-The browser catalog stores only the selected alias label, loopback URL, and the
-remote Goal-creation preference. LoopX does not store SSH credentials. The
-active source reports its connection health. Every SSH source starts read-only.
-Selecting **+ Goal** performs a capability handshake and enables only typed
-`goal.create` preview/apply requests bound to that remote service instance.
+The browser catalog stores only the selected alias label, loopback URL, the
+verified remote control-plane instance binding, and the remote Goal-creation
+preference. LoopX does not store SSH credentials. The active source reports its
+connection health. Every SSH source starts read-only. A configured SSH alias is
+revalidated against the local forwarded port before its binding is accepted;
+an occupied port serving another instance fails closed. Manual tunnel URLs use
+the first explicit selection as their initial binding and never silently rebind
+to a different instance. Selecting **+ Goal** performs a capability handshake
+and enables only typed `goal.create` preview/apply requests bound to that remote
+service instance.
 Existing Goals, Todos, lifecycle actions, settings, corrections, and Agent
 sessions remain read-only.
 
@@ -304,12 +309,16 @@ connection health and the browser's last successful observation time, and
 aggregates ongoing Goals and open Todos. **Refresh all** starts a new bounded
 read cycle; one unavailable machine does not block the others.
 
-All machines is a projection, not a shared control plane. Goal and Todo
+All machines is a projection, not a shared control plane. Before reading an SSH
+source, it verifies that the current capability instance exactly matches the
+stored source binding; unbound, unavailable, or mismatched sources remain
+unavailable and contribute no Goal or Todo rows. Goal and Todo
 identities stay namespaced by their source, including when two machines expose
 the same bare id; LoopX does not merge or deduplicate them. The overview issues
 read-only status requests and never starts an SSH tunnel. Selecting a Goal
-first reselects its owning source, verifies the current workspace-registry
-revision, and fetches that exact Goal before entering the machine workspace.
+first reselects and revalidates its owning source, verifies the current
+workspace-registry revision, and fetches that exact Goal before entering the
+machine workspace.
 Local writes remain governed by the existing preview/apply protocol after that
 revalidation. SSH-tunnel sources remain read-only, and selecting them grants no
 remote write authority.

@@ -3,12 +3,19 @@ import { resolveFrontstageOpsStatusUrl } from "./local-status-query";
 export const defaultLocalStatusSourceUrl = "/status.json";
 export const statusSourceCatalogStorageKey = "loopx-status-source-catalog-v1";
 
+export type SshSourceBinding = {
+  controlPlaneInstanceId: string;
+  schemaVersion: "ssh_source_binding_v1";
+};
+
 export type StatusSource = {
   goalCreationRequested: boolean;
   id: string;
   kind: "local" | "ssh_tunnel";
   label: string;
   readOnly: boolean;
+  sshHostAlias?: string | null;
+  sourceBinding?: SshSourceBinding | null;
   statusUrl: string;
 };
 
@@ -37,6 +44,8 @@ export const localStatusSource: StatusSource = {
   kind: "local",
   label: "本机",
   readOnly: false,
+  sshHostAlias: null,
+  sourceBinding: null,
   statusUrl: defaultLocalStatusSourceUrl,
 };
 
@@ -72,6 +81,26 @@ function sourceId(statusUrl: string) {
   return `ssh-${(hash >>> 0).toString(36)}`;
 }
 
+function parseSourceBinding(value: unknown): SshSourceBinding | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const candidate = value as Record<string, unknown>;
+  const instanceId = typeof candidate.controlPlaneInstanceId === "string"
+    ? candidate.controlPlaneInstanceId.trim()
+    : "";
+  if (candidate.schemaVersion !== "ssh_source_binding_v1"
+      || !/^[A-Za-z0-9_-]{16,160}$/.test(instanceId)) return null;
+  return {
+    controlPlaneInstanceId: instanceId,
+    schemaVersion: "ssh_source_binding_v1",
+  };
+}
+
+function parseSshHostAlias(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const alias = value.trim();
+  return /^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$/.test(alias) ? alias : null;
+}
+
 function parseStoredSource(value: unknown, baseHref: string): StatusSource | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const candidate = value as Record<string, unknown>;
@@ -87,6 +116,8 @@ function parseStoredSource(value: unknown, baseHref: string): StatusSource | nul
     kind: "ssh_tunnel",
     label,
     readOnly: true,
+    sshHostAlias: parseSshHostAlias(candidate.sshHostAlias),
+    sourceBinding: parseSourceBinding(candidate.sourceBinding),
     statusUrl: resolved.url,
   };
 }
@@ -123,7 +154,7 @@ export function saveStatusSourceCatalog(storage: StatusSourceStorage, catalog: S
 
 export function addSshTunnelStatusSource(
   catalog: StatusSourceCatalog,
-  input: { label: string; statusUrl: string },
+  input: { label: string; sshHostAlias?: string | null; statusUrl: string },
   baseHref: string,
 ): AddStatusSourceResult {
   const label = input.label.trim();
@@ -140,11 +171,28 @@ export function addSshTunnelStatusSource(
     kind: "ssh_tunnel",
     label,
     readOnly: true,
+    sshHostAlias: parseSshHostAlias(input.sshHostAlias),
+    sourceBinding: null,
     statusUrl: resolved.url,
   };
   return {
     catalog: { ...catalog, sources: [...catalog.sources, source] },
     source,
+  };
+}
+
+export function bindSshTunnelStatusSource(
+  catalog: StatusSourceCatalog,
+  sourceIdToUpdate: string,
+  binding: SshSourceBinding,
+): StatusSourceCatalog {
+  const normalized = parseSourceBinding(binding);
+  if (!normalized) return catalog;
+  return {
+    ...catalog,
+    sources: catalog.sources.map((source) => source.kind === "ssh_tunnel" && source.id === sourceIdToUpdate
+      ? { ...source, sourceBinding: normalized }
+      : source),
   };
 }
 
@@ -192,6 +240,8 @@ export function projectedStatusSourceForUrl(catalog: StatusSourceCatalog, status
     kind: "ssh_tunnel",
     label: "临时来源",
     readOnly: true,
+    sshHostAlias: null,
+    sourceBinding: null,
     statusUrl: statusUrl.trim(),
   };
 }

@@ -32,6 +32,10 @@ const source: StatusSource = {
   kind: "ssh_tunnel",
   label: "Remote lab",
   readOnly: true,
+  sourceBinding: {
+    controlPlaneInstanceId: "control-plane-fixture",
+    schemaVersion: "ssh_source_binding_v1",
+  },
   statusUrl: "http://127.0.0.1:8876/status.json",
 };
 

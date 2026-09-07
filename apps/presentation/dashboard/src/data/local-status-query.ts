@@ -5,7 +5,7 @@ import {
   periodicReportIndexResponseSchema,
   periodicReportProjectionResponseSchema,
 } from "./status";
-import type { StatusSource } from "./status-source-catalog";
+import type { SshSourceBinding, StatusSource } from "./status-source-catalog";
 
 export const expectedStatusContractSchemaVersion = 2;
 export const fallbackStatusContractReloadHint = "scripts/macos-dashboard-launchagent.sh restart";
@@ -93,10 +93,62 @@ export async function fetchFrontstageStatusPayload(statusUrl: string) {
 }
 
 export class MachineStatusLoadError extends Error {
-  constructor(readonly code: "invalid_source" | "http" | "network" | "invalid_payload") {
+  constructor(readonly code: "binding_required" | "binding_mismatch" | "binding_unavailable" | "invalid_source" | "http" | "network" | "invalid_payload") {
     super(code);
     this.name = "MachineStatusLoadError";
   }
+}
+
+export async function fetchMachineSourceBinding(
+  source: StatusSource,
+  baseHref: string,
+  signal: AbortSignal,
+): Promise<SshSourceBinding> {
+  const resolved = resolveLocalStatusUrl(source.statusUrl, baseHref);
+  if (!resolved.source || source.kind !== "ssh_tunnel") {
+    throw new MachineStatusLoadError("invalid_source");
+  }
+  const sourceOrigin = new URL(resolved.source.url, baseHref).origin;
+  let response: Response;
+  try {
+    response = await fetch(new URL("/api/chat/capabilities", sourceOrigin), {
+      cache: "no-store",
+      signal: AbortSignal.any([signal, AbortSignal.timeout(8_000)]),
+    });
+  } catch (error) {
+    if (signal.aborted) throw error;
+    throw new MachineStatusLoadError("binding_unavailable");
+  }
+  if (!response.ok) throw new MachineStatusLoadError("binding_unavailable");
+  const payload = await response.json().catch(() => null) as Record<string, unknown> | null;
+  const instanceId = payload?.control_plane_instance_id;
+  if (payload?.schema_version !== "loopx_chat_capabilities_v1"
+      || typeof instanceId !== "string"
+      || !instanceId) {
+    throw new MachineStatusLoadError("binding_unavailable");
+  }
+  return {
+    controlPlaneInstanceId: instanceId,
+    schemaVersion: "ssh_source_binding_v1",
+  };
+}
+
+export async function revalidateMachineSourceBinding(
+  source: StatusSource,
+  baseHref: string,
+  signal: AbortSignal,
+  options: { allowFirstBinding?: boolean } = {},
+): Promise<SshSourceBinding> {
+  if (source.kind !== "ssh_tunnel") throw new MachineStatusLoadError("invalid_source");
+  if (!source.sourceBinding && !options.allowFirstBinding) {
+    throw new MachineStatusLoadError("binding_required");
+  }
+  const observedBinding = await fetchMachineSourceBinding(source, baseHref, signal);
+  if (source.sourceBinding
+      && observedBinding.controlPlaneInstanceId !== source.sourceBinding.controlPlaneInstanceId) {
+    throw new MachineStatusLoadError("binding_mismatch");
+  }
+  return observedBinding;
 }
 
 export async function fetchMachineStatusPayload(
@@ -106,6 +158,9 @@ export async function fetchMachineStatusPayload(
 ): Promise<StatusPayload> {
   const resolved = resolveLocalStatusUrl(source.statusUrl, baseHref);
   if (!resolved.source) throw new MachineStatusLoadError("invalid_source");
+  if (source.kind === "ssh_tunnel") {
+    await revalidateMachineSourceBinding(source, baseHref, signal);
+  }
   const url = scopedStatusUrl(resolved.source.url, "active", baseHref);
   let response: Response;
   try {

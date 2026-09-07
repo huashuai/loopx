@@ -59,6 +59,10 @@ export const defaultSshSourceEnsureUrl = "/api/ssh-source/ensure";
 export type EnsureSshSourceResult = {
   control_url: string;
   ok: true;
+  sourceBinding: {
+    controlPlaneInstanceId: string;
+    schemaVersion: "ssh_source_binding_v1";
+  };
   status_url: string;
   tunnel_required: boolean;
   remote_started: boolean;
@@ -74,13 +78,29 @@ export async function ensureSshSource(
     body: JSON.stringify({ host_alias: hostAlias, local_port: Number(localPort) }),
   });
   const payload = (await response.json().catch(() => null)) as
-    | (EnsureSshSourceResult & { error?: string })
+    | (Omit<EnsureSshSourceResult, "sourceBinding"> & {
+      error?: string;
+      source_binding?: {
+        control_plane_instance_id?: unknown;
+        schema_version?: unknown;
+      };
+    })
     | null;
   if (!response.ok) {
     throw new Error(payload?.error ?? "无法建立 SSH 隧道来源。");
   }
-  if (!payload?.ok) {
+  const instanceId = payload?.source_binding?.control_plane_instance_id;
+  if (!payload?.ok
+      || payload.source_binding?.schema_version !== "ssh_source_binding_v1"
+      || typeof instanceId !== "string"
+      || !instanceId) {
     throw new Error("无法建立 SSH 隧道来源。");
   }
-  return payload;
+  return {
+    ...payload,
+    sourceBinding: {
+      controlPlaneInstanceId: instanceId,
+      schemaVersion: "ssh_source_binding_v1",
+    },
+  };
 }

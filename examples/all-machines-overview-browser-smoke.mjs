@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { mkdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
@@ -17,7 +18,20 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const dashboardDir = resolve(repoRoot, "apps/presentation/dashboard");
 const outputDir = resolve(repoRoot, "output/playwright/all-machines-overview");
 const port = Number(process.env.LOOPX_ALL_MACHINES_PORT ?? "5199");
-const appUrl = `http://127.0.0.1:${port}/`;
+const packaged = process.env.LOOPX_ALL_MACHINES_PACKAGED === "1";
+const appOrigin = `http://127.0.0.1:${port}`;
+const appUrl = `http://127.0.0.1:${port}/${packaged ? "chat/" : ""}`;
+
+function startServer() {
+  if (!packaged) return startViteDashboardServer({ dashboardDir, port });
+  return spawn(process.env.LOOPX_PYTHON_BIN || "python3", [
+    "-m", "http.server", String(port), "--bind", "127.0.0.1", "--directory", resolve(repoRoot, "loopx/web"),
+  ], {
+    cwd: repoRoot,
+    env: { ...process.env },
+    stdio: "ignore",
+  });
+}
 
 function deferred() {
   let resolvePromise;
@@ -102,12 +116,13 @@ async function selectSource(page, label) {
 async function main() {
   const { chromium } = loadPlaywright();
   await mkdir(outputDir, { recursive: true });
-  const server = startViteDashboardServer({ dashboardDir, port });
+  const server = startServer();
   let browser;
   try {
     await waitForHttp(appUrl);
     browser = await launchBrowser(chromium);
     const page = await browser.newPage({ viewport: { height: 982, width: 1512 } });
+    page.on("pageerror", (error) => console.error(`browser page error: ${error.message}`));
     const payloads = new Map([
       ["local", statusPayload("This machine")],
       ["remote-a", statusPayload("Remote A")],
@@ -116,14 +131,31 @@ async function main() {
     let localExactGate = null;
     let localExactStarted = null;
     let ensureRequestCount = 0;
+    let crossedStatusRequestCount = 0;
 
     await page.addInitScript(() => {
       localStorage.setItem("loopx-pw-locale", "en");
       localStorage.setItem("loopx-status-source-catalog-v1", JSON.stringify({
         schemaVersion: 1,
         sources: [
-          { kind: "ssh_tunnel", label: "Remote A", statusUrl: "http://127.0.0.1:8876/status.json" },
-          { kind: "ssh_tunnel", label: "Remote B", statusUrl: "http://127.0.0.1:8976/status.json" },
+          {
+            kind: "ssh_tunnel",
+            label: "Remote A",
+            sourceBinding: { controlPlaneInstanceId: "remote-a-instance", schemaVersion: "ssh_source_binding_v1" },
+            statusUrl: "http://127.0.0.1:8876/status.json",
+          },
+          {
+            kind: "ssh_tunnel",
+            label: "Remote B",
+            sourceBinding: { controlPlaneInstanceId: "remote-b-instance", schemaVersion: "ssh_source_binding_v1" },
+            statusUrl: "http://127.0.0.1:8976/status.json",
+          },
+          {
+            kind: "ssh_tunnel",
+            label: "Crossed source",
+            sourceBinding: { controlPlaneInstanceId: "remote-c-original", schemaVersion: "ssh_source_binding_v1" },
+            statusUrl: "http://127.0.0.1:9076/status.json",
+          },
         ],
       }));
     });
@@ -132,10 +164,25 @@ async function main() {
       json: { hosts: [], ok: true, schema_version: "ssh_host_catalog_v0" },
       status: 200,
     }));
-    await page.route(`${appUrl}api/ssh-source/ensure`, (route) => {
+    await page.route(`${appOrigin}/api/ssh-source/ensure`, (route) => {
       ensureRequestCount += 1;
       return route.fulfill({ contentType: "application/json", json: { ok: true }, status: 200 });
     });
+    await page.route("http://127.0.0.1:8876/api/chat/capabilities", (route) => route.fulfill({
+      contentType: "application/json",
+      json: { control_plane_instance_id: "remote-a-instance", ok: true, schema_version: "loopx_chat_capabilities_v1" },
+      status: 200,
+    }));
+    await page.route("http://127.0.0.1:8976/api/chat/capabilities", (route) => route.fulfill({
+      contentType: "application/json",
+      json: { control_plane_instance_id: "remote-b-instance", ok: true, schema_version: "loopx_chat_capabilities_v1" },
+      status: 200,
+    }));
+    await page.route("http://127.0.0.1:9076/api/chat/capabilities", (route) => route.fulfill({
+      contentType: "application/json",
+      json: { control_plane_instance_id: "remote-c-wrong", ok: true, schema_version: "loopx_chat_capabilities_v1" },
+      status: 200,
+    }));
 
     async function serveStatus(route, sourceId) {
       requestLedger.push({ method: route.request().method(), sourceId, url: route.request().url() });
@@ -155,14 +202,31 @@ async function main() {
       await route.fulfill({ contentType: "application/json", json: payloads.get(sourceId), status: 200 });
     }
 
-    await page.route(`${appUrl}status.json*`, (route) => serveStatus(route, "local"));
+    await page.route(`${appOrigin}/status.json*`, (route) => serveStatus(route, "local"));
     await page.route("http://127.0.0.1:8876/status.json*", (route) => serveStatus(route, "remote-a"));
     await page.route("http://127.0.0.1:8976/status.json*", (route) => serveStatus(route, "remote-b"));
+    await page.route("http://127.0.0.1:9076/status.json*", (route) => {
+      crossedStatusRequestCount += 1;
+      return route.fulfill({ contentType: "application/json", json: statusPayload("Wrong machine"), status: 200 });
+    });
 
-    await page.goto(`${appUrl}?view=all-machines`, { waitUntil: "domcontentloaded" });
-    await page.getByRole("heading", { name: "All machines", exact: true }).waitFor();
+    const overviewUrl = `${appUrl}?statusUrl=/status.json&view=all-machines`;
+    await page.goto(overviewUrl, { waitUntil: "domcontentloaded" });
+    try {
+      await page.getByRole("heading", { name: "All machines", exact: true }).waitFor({ timeout: 10_000 });
+    } catch (error) {
+      console.error(`browser URL: ${page.url()}`);
+      console.error(`browser title: ${await page.title()}`);
+      console.error(`browser body: ${(await page.locator("body").innerText()).slice(0, 1_000)}`);
+      throw error;
+    }
     await page.locator(".all-machines-health-row").filter({ hasText: "Remote B" })
       .locator("text=Unavailable").waitFor();
+    await page.locator(".all-machines-health-row").filter({ hasText: "Crossed source" })
+      .locator("text=Unavailable").waitFor();
+    if (crossedStatusRequestCount) {
+      throw new Error("A binding-mismatched source rendered status from another machine");
+    }
     const sharedRows = page.locator(".all-machines-goal-row").filter({ hasText: "Shared Goal" });
     if (await sharedRows.count() !== 2) throw new Error("Same-id Goals on two machines were deduplicated");
     if (await sharedRows.filter({ hasText: "本机" }).count() !== 1) throw new Error("The local Goal lost its source namespace");
@@ -208,7 +272,7 @@ async function main() {
     await page.getByRole("heading", { name: "All machines", exact: true }).waitFor();
     await page.setViewportSize({ height: 844, width: 390 });
     await page.screenshot({ path: resolve(outputDir, "mobile-first-screen.png"), fullPage: false, animations: "disabled" });
-    console.log(`all-machines-overview-browser-smoke: ok\npreview=${appUrl}?view=all-machines\nscreenshots=${outputDir}`);
+    console.log(`all-machines-overview-browser-smoke (${packaged ? "packaged" : "development"}): ok\npreview=${overviewUrl}\nscreenshots=${outputDir}`);
   } finally {
     await cleanupBrowserSmoke({ browser, fixturePaths: [], server });
   }
