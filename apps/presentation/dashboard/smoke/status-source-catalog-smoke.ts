@@ -94,8 +94,9 @@ assert(secondTunnel.source.id !== added.source.id, "each tunnel keeps an indepen
 
 const storage = new MemoryStorage();
 const boundCatalog = bindSshTunnelStatusSource(secondTunnel.catalog, added.source.id, {
+  machineId: "remote-lab-machine",
   controlPlaneInstanceId: "remote-lab-instance",
-  schemaVersion: "ssh_source_binding_v1",
+  schemaVersion: "ssh_source_binding_v2",
 });
 equal(boundCatalog.sources[1].sourceBinding?.controlPlaneInstanceId, "remote-lab-instance", "a verified instance is bound to exactly one catalog source");
 equal(boundCatalog.sources[2].sourceBinding, null, "binding one source never grants trust to another source");
@@ -110,6 +111,14 @@ const restored = loadStatusSourceCatalog(storage, baseHref);
 equal(restored.sources[1].readOnly, true, "persisted input cannot downgrade a tunnel to writable");
 equal(restored.sources[1].goalCreationRequested, true, "the explicit Goal-creation preference survives reload");
 equal(restored.sources[1].sourceBinding?.controlPlaneInstanceId, "remote-lab-instance", "the verified instance binding survives reload");
+equal(restored.sources[1].sourceBinding?.machineId, "remote-lab-machine", "the stable machine binding survives reload");
+stored.sources[0].sourceBinding = {
+  controlPlaneInstanceId: "legacy-process-only",
+  schemaVersion: "ssh_source_binding_v1",
+};
+storage.setItem(statusSourceCatalogStorageKey, JSON.stringify(stored));
+const legacyRestored = loadStatusSourceCatalog(storage, baseHref);
+equal(legacyRestored.sources[1].sourceBinding, null, "a legacy process-only binding fails closed until explicit verification");
 deepEqual(
   remoteGoalCreationControlPresentation(true, "error"),
   { action: "retry", label: "retry" },

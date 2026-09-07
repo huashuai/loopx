@@ -617,8 +617,9 @@ async function installApi(page, { goalSubagentConfigurationEnabled = true } = {}
       json: {
         ok: true,
         source_binding: {
+          machine_id: "remote-lab-machine",
           control_plane_instance_id: "remote-lab-instance",
-          schema_version: "ssh_source_binding_v1",
+          schema_version: "ssh_source_binding_v2",
         },
         status_url: "http://127.0.0.1:8876/status.json",
         tunnel_required: true,

@@ -42,8 +42,9 @@ function source(id: string, label: string, readOnly: boolean): StatusSource {
     label,
     readOnly,
     sourceBinding: readOnly ? {
+      machineId: `${id}-machine`,
       controlPlaneInstanceId: `${id}-instance`,
-      schemaVersion: "ssh_source_binding_v1",
+      schemaVersion: "ssh_source_binding_v2",
     } : null,
     statusUrl: readOnly ? `http://127.0.0.1:${id === "remote-a" ? "8876" : "8976"}/status.json` : "/status.json",
   };
@@ -167,7 +168,8 @@ async function sourceBindingContract() {
       requestedUrls.push(url);
       if (url.endsWith("/api/chat/capabilities")) {
         return new Response(JSON.stringify({
-          control_plane_instance_id: "wrong-machine-instance",
+          machine_id: "wrong-machine-id",
+          control_plane_instance_id: remoteA.sourceBinding?.controlPlaneInstanceId,
           ok: true,
           schema_version: "loopx_chat_capabilities_v1",
         }), { headers: { "content-type": "application/json" }, status: 200 });
@@ -180,7 +182,7 @@ async function sourceBindingContract() {
     await assert.rejects(
       fetchMachineStatusPayload(remoteA, "http://127.0.0.1:5173/", new AbortController().signal),
       (error) => error instanceof MachineStatusLoadError && error.code === "binding_mismatch",
-      "a source label cannot consume status from another control-plane instance",
+      "a source label cannot consume status from another stable machine",
     );
     assert.deepEqual(
       requestedUrls,
@@ -194,7 +196,8 @@ async function sourceBindingContract() {
       requestedUrls.push(url);
       if (url.endsWith("/api/chat/capabilities")) {
         return new Response(JSON.stringify({
-          control_plane_instance_id: remoteA.sourceBinding?.controlPlaneInstanceId,
+          machine_id: remoteA.sourceBinding?.machineId,
+          control_plane_instance_id: "remote-a-restarted-instance",
           ok: true,
           schema_version: "loopx_chat_capabilities_v1",
         }), { headers: { "content-type": "application/json" }, status: 200 });
@@ -210,7 +213,11 @@ async function sourceBindingContract() {
       new AbortController().signal,
     );
     assert.equal(payload.ok, true);
-    assert.equal(requestedUrls.length, 2, "a matching instance binding admits one status read");
+    assert.equal(
+      requestedUrls.length,
+      2,
+      "a stable machine binding admits one status read after the control-plane process restarts",
+    );
 
     const unbound = { ...remoteA, sourceBinding: null };
     requestedUrls.length = 0;

@@ -14,6 +14,7 @@ import subprocess
 import time
 import urllib.error
 import urllib.request
+from typing import TypedDict
 
 from .ssh_host_catalog import configured_ssh_host_aliases
 
@@ -42,27 +43,38 @@ def _loopback_status_ok(port: int, *, timeout: float = 8.0) -> bool:
         with urllib.request.urlopen(
             f"http://127.0.0.1:{port}/status.json", timeout=timeout
         ) as response:
-            return response.status == 200
+            return int(response.status) == 200
     except (OSError, urllib.error.URLError):
         return False
 
 
-def _control_instance_id(payload: object) -> str | None:
+class ControlIdentity(TypedDict):
+    machine_id: str
+    control_plane_instance_id: str
+
+
+def _control_identity(payload: object) -> ControlIdentity | None:
     if not isinstance(payload, dict):
         return None
+    machine_id = payload.get("machine_id")
     instance_id = payload.get("control_plane_instance_id")
     if (
         payload.get("schema_version") != "loopx_chat_capabilities_v1"
         or payload.get("remote_goal_creation")
         != "preview_locked_instance_bound"
+        or not isinstance(machine_id, str)
+        or not machine_id
         or not isinstance(instance_id, str)
         or not instance_id
     ):
         return None
-    return instance_id
+    return {
+        "machine_id": machine_id,
+        "control_plane_instance_id": instance_id,
+    }
 
 
-def _loopback_control_identity(port: int, *, timeout: float = 8.0) -> str | None:
+def _loopback_control_identity(port: int, *, timeout: float = 8.0) -> ControlIdentity | None:
     try:
         with urllib.request.urlopen(
             f"http://127.0.0.1:{port}/api/chat/capabilities", timeout=timeout
@@ -70,12 +82,12 @@ def _loopback_control_identity(port: int, *, timeout: float = 8.0) -> str | None
             payload = json.loads(response.read().decode("utf-8"))
             if response.status != 200:
                 return None
-        return _control_instance_id(payload)
+        return _control_identity(payload)
     except (OSError, ValueError, json.JSONDecodeError, urllib.error.URLError):
         return None
 
 
-def _remote_control_identity(alias: str, *, timeout: float = 5.0) -> str | None:
+def _remote_control_identity(alias: str, *, timeout: float = 5.0) -> ControlIdentity | None:
     try:
         result = subprocess.run(
             [
@@ -94,7 +106,7 @@ def _remote_control_identity(alias: str, *, timeout: float = 5.0) -> str | None:
     if result.returncode != 0:
         return None
     try:
-        return _control_instance_id(json.loads(result.stdout))
+        return _control_identity(json.loads(result.stdout))
     except (ValueError, json.JSONDecodeError):
         return None
 
@@ -205,7 +217,8 @@ def ensure_ssh_source(
         "tunnel_required": tunnel_required,
         "remote_started": remote_started,
         "source_binding": {
-            "schema_version": "ssh_source_binding_v1",
-            "control_plane_instance_id": local_identity,
+            "schema_version": "ssh_source_binding_v2",
+            "machine_id": local_identity["machine_id"],
+            "control_plane_instance_id": local_identity["control_plane_instance_id"],
         },
     }

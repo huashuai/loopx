@@ -4,8 +4,9 @@ export const defaultLocalStatusSourceUrl = "/status.json";
 export const statusSourceCatalogStorageKey = "loopx-status-source-catalog-v1";
 
 export type SshSourceBinding = {
+  machineId: string;
   controlPlaneInstanceId: string;
-  schemaVersion: "ssh_source_binding_v1";
+  schemaVersion: "ssh_source_binding_v2";
 };
 
 export type StatusSource = {
@@ -84,14 +85,19 @@ function sourceId(statusUrl: string) {
 function parseSourceBinding(value: unknown): SshSourceBinding | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const candidate = value as Record<string, unknown>;
+  const machineId = typeof candidate.machineId === "string"
+    ? candidate.machineId.trim()
+    : "";
   const instanceId = typeof candidate.controlPlaneInstanceId === "string"
     ? candidate.controlPlaneInstanceId.trim()
     : "";
-  if (candidate.schemaVersion !== "ssh_source_binding_v1"
+  if (candidate.schemaVersion !== "ssh_source_binding_v2"
+      || !/^[A-Za-z0-9_-]{16,160}$/.test(machineId)
       || !/^[A-Za-z0-9_-]{16,160}$/.test(instanceId)) return null;
   return {
+    machineId,
     controlPlaneInstanceId: instanceId,
-    schemaVersion: "ssh_source_binding_v1",
+    schemaVersion: "ssh_source_binding_v2",
   };
 }
 

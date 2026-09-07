@@ -101,7 +101,7 @@ async function main() {
           {
             kind: "ssh_tunnel",
             label: "Crossed manual source",
-            sourceBinding: { controlPlaneInstanceId: "expected-manual-instance", schemaVersion: "ssh_source_binding_v1" },
+            sourceBinding: { machineId: "expected-manual-machine", controlPlaneInstanceId: "expected-manual-instance", schemaVersion: "ssh_source_binding_v2" },
             statusUrl: "http://127.0.0.1:9076/status.json",
           },
         ],
@@ -123,8 +123,9 @@ async function main() {
           ok: true,
           remote_started: true,
           source_binding: {
+            machine_id: `${host}-machine`,
             control_plane_instance_id: `${host}-instance`,
-            schema_version: "ssh_source_binding_v1",
+            schema_version: "ssh_source_binding_v2",
           },
           status_url: `http://127.0.0.1:${body.local_port}/status.json`,
           tunnel_required: true,
@@ -148,6 +149,7 @@ async function main() {
     await page.route("http://127.0.0.1:9076/api/chat/capabilities", (route) => route.fulfill({
       contentType: "application/json",
       json: {
+        machine_id: "wrong-manual-machine",
         control_plane_instance_id: "wrong-manual-instance",
         ok: true,
         schema_version: "loopx_chat_capabilities_v1",
@@ -165,6 +167,7 @@ async function main() {
           release_id: "browser-smoke",
           source_revision: "browser-smoke",
         },
+        machine_id: "remote-a-machine",
         control_plane_instance_id: "remote-a-instance",
         remote_goal_creation: "preview_locked_instance_bound",
         agent_backend: "multi_adapter",
