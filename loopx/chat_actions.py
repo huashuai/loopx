@@ -723,7 +723,7 @@ class ChatActionService(
         if source_goal is None and workspace_ref == "current":
             workspace_candidates = [
                 root for root in self.workspace_roots
-                if root.is_dir() and (root / ".git").exists()
+                if root.is_dir() and any((candidate / ".git").exists() for candidate in (root, *root.parents))
             ]
             if len(workspace_candidates) == 1:
                 return workspace_candidates[0], {
@@ -747,7 +747,7 @@ class ChatActionService(
         elif source_goal is None and workspace_ref.startswith("workspace-"):
             workspace_candidates = [
                 root for root in self.workspace_roots
-                if root.is_dir() and (root / ".git").exists()
+                if root.is_dir() and any((candidate / ".git").exists() for candidate in (root, *root.parents))
             ]
             selected = next(
                 (
@@ -774,7 +774,7 @@ class ChatActionService(
                 for index, root in enumerate(
                     (
                         root for root in self.workspace_roots
-                        if root.is_dir() and (root / ".git").exists()
+                        if root.is_dir() and any((candidate / ".git").exists() for candidate in (root, *root.parents))
                     ),
                     start=1,
                 )
