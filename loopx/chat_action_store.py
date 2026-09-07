@@ -431,6 +431,107 @@ class ChatActionStore:
             idempotent_states={"deferred"},
         )
 
+    def reconcile_gate_resolution(
+        self,
+        proposal_id: str,
+        *,
+        canonical_status: str,
+        canonical_decision_outcome: str | None,
+    ) -> dict[str, Any]:
+        """Settle a Gate proposal after its canonical Todo changed elsewhere."""
+
+        token = _opaque_id(proposal_id, field="proposal_id")
+        status = _opaque_id(canonical_status, field="canonical_status")
+        decision = (
+            _opaque_id(
+                canonical_decision_outcome,
+                field="canonical_decision_outcome",
+            )
+            if canonical_decision_outcome
+            else None
+        )
+        if decision not in {None, "approve", "reject", "cancel"}:
+            raise ValueError("canonical_decision_outcome is unsupported")
+        with exclusive_file_lock(
+            self.path,
+            agent_id="loopx-chat",
+            operation="reconcile_chat_gate_resolution",
+        ):
+            payload = self._read()
+            proposal = payload["proposals"].get(token)
+            if not isinstance(proposal, dict):
+                raise KeyError("typed Chat action proposal was not found")
+            if proposal.get("action_kind") != "gate.resolve":
+                raise ValueError("only gate.resolve proposals can reconcile a canonical Gate")
+            proposal_status = str(proposal.get("status") or "")
+            if proposal_status in {
+                "applied",
+                "stale",
+                "rejected",
+                "cancelled",
+            }:
+                return proposal
+            if proposal_status not in {
+                "preview_ready",
+                "applying",
+                "gated",
+                "failed",
+                "deferred",
+            }:
+                raise ActionConflictError(
+                    f"proposal in {proposal_status} state cannot reconcile a canonical Gate"
+                )
+            parameters = proposal.get("normalized_parameters")
+            if not isinstance(parameters, dict):
+                raise ValueError("typed Chat action proposal is malformed")
+            requested_decision = str(parameters.get("decision") or "")
+            goal_id = _opaque_id(parameters.get("goal_id"), field="goal_id")
+            todo_id = _opaque_id(parameters.get("todo_id"), field="todo_id")
+            now = _utc_now()
+            if decision == requested_decision:
+                receipt = {
+                    "receipt_id": _canonical_digest(
+                        {
+                            "proposal_id": token,
+                            "goal_id": goal_id,
+                            "todo_id": todo_id,
+                            "decision_outcome": decision,
+                        }
+                    )[:32],
+                    "outcome": "canonical_gate_already_resolved",
+                    "projection_verified": True,
+                    "decision_outcome": decision,
+                    "canonical_status": status,
+                    "resource_ids": {
+                        "goal_id": goal_id,
+                        "todo_id": todo_id,
+                    },
+                }
+                proposal["status"] = "applied"
+                proposal["receipt"] = receipt
+                proposal["applied_at"] = now
+                proposal["stale"] = None
+            else:
+                proposal["status"] = "stale"
+                proposal["receipt"] = None
+                proposal["stale"] = {
+                    "reason": (
+                        "canonical_gate_decision_conflict"
+                        if decision
+                        else "canonical_gate_no_longer_open"
+                    ),
+                    "requested_decision": requested_decision,
+                    "canonical_decision_outcome": decision,
+                    "canonical_status": status,
+                    "detected_at": now,
+                }
+            proposal["gate"] = None
+            proposal["failure"] = None
+            proposal["available_transitions"] = []
+            proposal["updated_at"] = now
+            self._write(payload)
+            return proposal
+
     def link_regeneration(self, proposal_id: str, *, regenerated_from: str) -> dict[str, Any]:
         token = _opaque_id(proposal_id, field="proposal_id")
         source = _opaque_id(regenerated_from, field="regenerated_from")

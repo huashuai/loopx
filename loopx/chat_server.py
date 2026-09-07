@@ -1099,7 +1099,7 @@ class ChatRequestHandler(
         ) or None
         status = _compact_text((query.get("status") or [""])[0], limit=80) or None
         try:
-            proposals = self.server.action_store.list(
+            proposals = self.server.action_service.list(
                 goal_id=goal_id,
                 context_kind=context_kind,
                 status=status,
@@ -1149,7 +1149,7 @@ class ChatRequestHandler(
                 raise ValueError("action transition request must be empty")
             if transition == "regenerate":
                 proposal = self.server.action_service.regenerate(proposal_id)
-                status = 201
+                status = 201 if proposal.get("proposal_id") != proposal_id else 200
             elif transition == "reject":
                 proposal = self.server.action_service.reject(proposal_id)
                 status = 200

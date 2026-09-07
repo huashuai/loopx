@@ -299,6 +299,7 @@ async function installApi(page, { goalSubagentConfigurationEnabled = true } = {}
     nextStatusDelayMs: 0,
     nextFullStatusDelayMs: 0,
     failNextFullStatus: false,
+    reconcileGateOnNextRegenerate: false,
     captureNextStatusGeneration: false,
     capturedStatusGeneration: null,
     activationChangeAfterCapturedActive: null,
@@ -1228,6 +1229,37 @@ async function installApi(page, { goalSubagentConfigurationEnabled = true } = {}
     const transition = url.pathname.match(/^\/api\/actions\/(.+)\/(defer|reject|regenerate)$/);
     if (transition) {
       const existing = actionProposals.get(transition[1]);
+      if (transition[2] === "regenerate" && state.reconcileGateOnNextRegenerate && existing?.action_kind === "gate.resolve") {
+        state.reconcileGateOnNextRegenerate = false;
+        const parameters = existing.normalized_parameters;
+        for (const [proposalId, candidate] of actionProposals.entries()) {
+          if (candidate.action_kind !== "gate.resolve"
+            || candidate.normalized_parameters?.goal_id !== parameters.goal_id
+            || candidate.normalized_parameters?.todo_id !== parameters.todo_id
+            || candidate.normalized_parameters?.decision !== parameters.decision) continue;
+          actionProposals.set(proposalId, {
+            ...candidate,
+            available_transitions: [],
+            gate: null,
+            status: "applied",
+            receipt: {
+              decision_outcome: parameters.decision,
+              outcome: "canonical_gate_already_resolved",
+              projection_verified: true,
+              receipt_id: `receipt-${proposalId}`,
+              resource_ids: { goal_id: parameters.goal_id, todo_id: parameters.todo_id },
+            },
+            updated_at: "2026-08-13T01:00:02Z",
+          });
+        }
+        state.actionTransitions.push({ proposalId: transition[1], transition: transition[2] });
+        await route.fulfill({
+          contentType: "application/json",
+          json: { ok: true, proposal: actionProposals.get(transition[1]) },
+          status: 200,
+        });
+        return;
+      }
       const nextId = transition[2] === "regenerate" ? `${transition[1]}-regenerated` : transition[1];
       const proposal = {
         ...(existing ?? {}),
@@ -1364,7 +1396,40 @@ async function main() {
     if (!stoppedGoalBody.includes("Legacy Benchmark") || !stoppedGoalBody.includes("历史、Todo 和证据仍保留")) {
       throw new Error(`Stopped Goal lost its archive context after merge: ${stoppedGoalBody.slice(0, 1200)}`);
     }
+    const reconciledGateIds = ["proposal-gate-reconcile-a", "proposal-gate-reconcile-b"];
+    for (const proposalId of reconciledGateIds) {
+      const proposal = {
+        schema_version: "loopx_chat_action_proposal_v1",
+        proposal_id: proposalId,
+        action_kind: "gate.resolve",
+        summary: "Approve the validated release",
+        normalized_parameters: { goal_id: "product-release", todo_id: "todo-release-gate", decision: "approve" },
+        context: { kind: "goal", goal_id: "product-release" },
+        expected_state_fingerprint: "fixture-r1",
+        permission_classification: "durable_write",
+        validation_evidence: ["fixture validation"],
+        available_transitions: ["apply", "cancel"],
+        status: "gated",
+        receipt: null,
+        stale: null,
+        gate: { kind: "canonical_authority_required", summary: "Canonical Todo decision required", next_action: "Complete the User Todo." },
+        created_at: "2026-08-13T01:00:00Z",
+        updated_at: "2026-08-13T01:00:01Z",
+      };
+      page.__loopxRuntime.actionProposals.set(proposalId, proposal);
+    }
+    api.reconcileGateOnNextRegenerate = true;
     await page.locator(".personal-goal-link").filter({ hasText: "Product Release" }).click();
+    await page.getByRole("button", { name: "Chat", exact: true }).click();
+    const gateSummary = page.locator(".personal-gated-summary");
+    await gateSummary.waitFor({ state: "visible" });
+    if ((await gateSummary.locator(".personal-proposal-row").count()) !== 1) throw new Error("Gate reconciliation fixture did not compact duplicate persisted proposals");
+    await gateSummary.locator("summary").click();
+    await gateSummary.locator(".personal-proposal-row").first().click();
+    await page.getByRole("button", { name: "按最新状态重新检查" }).click();
+    await page.getByText(/^已应用，LoopX 状态将刷新。$/u).waitFor({ state: "visible" });
+    await gateSummary.waitFor({ state: "detached", timeout: 3_000 });
+    for (const proposalId of reconciledGateIds) page.__loopxRuntime.actionProposals.delete(proposalId);
     await stoppedDirectory.locator("summary").click();
     const writesBeforeLifecyclePreview = api.durableWriteCount;
     const statusRequestsBeforeStop = api.statusRequestCount;
