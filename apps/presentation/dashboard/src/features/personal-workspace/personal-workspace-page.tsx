@@ -1493,6 +1493,7 @@ export function PersonalWorkspacePage({
         setComposer(message);
         let clarification = t("composer.clarifySingleAction");
         if (intentRoute.missingFields.includes("resume_when")) clarification = t("composer.clarifyDefer");
+        if (intentRoute.missingFields.includes("continuation_mode")) clarification = t("composer.clarifyContinuation");
         setActionFeedback(clarification);
         return;
       }
@@ -1724,7 +1725,7 @@ export function PersonalWorkspacePage({
         }
         setTaskInspectorExpanded(false);
         setSelection(null);
-      }} onToggleInspectorSize={() => setTaskInspectorExpanded((current) => !current)} readOnly={readOnly} remoteGoalCreationEnabled={remoteGoalCreateOnly} runs={items.flatMap((item) => item.kind === "run" ? [item.run] : [])} selection={drawerSelection} /> : null}
+      }} onToggleInspectorSize={() => setTaskInspectorExpanded((current) => !current)} readOnly={readOnly} readOnlySourceLabel={readOnly ? statusSourceControl?.activeSource.label : undefined} remoteGoalCreationEnabled={remoteGoalCreateOnly} runs={items.flatMap((item) => item.kind === "run" ? [item.run] : [])} selection={drawerSelection} /> : null}
       drawerMode={drawerSelection?.kind === "todo" ? (taskInspectorExpanded ? "inspector-full" : "inspector") : "panel"}
       drawerOpen={drawerSelection !== null}
       mobileSidebarOpen={mobileSidebarOpen}

@@ -34,7 +34,7 @@ function startServer() {
   return startViteDashboardServer({ dashboardDir, port });
 }
 
-function statusPayload(goalId, displayName) {
+function statusPayload(goalId, displayName, { userGate = false } = {}) {
   const payload = structuredClone(require(resolve(repoRoot, "examples/status.example.json")));
   const goal = payload.run_history.goals[0];
   goal.id = goalId;
@@ -43,6 +43,32 @@ function statusPayload(goalId, displayName) {
     item.goal_id = goalId;
     for (const todo of item.agent_todos?.items ?? []) todo.goal_id = goalId;
     for (const todo of item.user_todos?.items ?? []) todo.goal_id = goalId;
+    if (userGate) {
+      const gate = {
+        action_kind: "resolve_managed_chat_gate",
+        blocks_agent: "codex",
+        bound_agent: "codex",
+        done: false,
+        goal_id: goalId,
+        index: 1,
+        role: "user",
+        schema_version: "todo_item_v0",
+        status: "open",
+        task_class: "user_gate",
+        text: "Approve the selected workspace and continue the Goal.",
+        todo_id: "todo_remote_gate",
+        updated_at: "2026-09-07T12:41:15Z",
+      };
+      item.status = "active_state_user_gate";
+      item.waiting_on = "controller";
+      item.user_todos = {
+        done_count: 0,
+        items: [gate],
+        open_count: 1,
+        source_section: "User Todo / Owner Review Reading Queue",
+        total_count: 1,
+      };
+    }
   }
   return payload;
 }
@@ -88,7 +114,7 @@ async function main() {
       ["local", statusPayload("local-goal", "Local Goal Only")],
       ["8766", statusPayload("local-goal", "Local Goal Only")],
       ["8876", statusPayload("remote-a-goal", "Remote A Goal Only")],
-      ["8976", statusPayload("remote-b-goal", "Remote B Goal Only")],
+      ["8976", statusPayload("remote-b-goal", "Remote B Goal Only", { userGate: true })],
       ["9076", statusPayload("crossed-goal", "Wrong Machine Goal")],
     ]);
 
@@ -236,6 +262,21 @@ async function main() {
     if (await page.getByText("Remote A Goal Only", { exact: true }).count()) throw new Error("A stale Remote A payload replaced Remote B goals");
     if (!new URL(page.url()).searchParams.get("statusUrl")?.includes("8976")) throw new Error(`The route did not retain Remote B: ${page.url()}`);
 
+    await page.getByText("Remote B Goal Only", { exact: true }).first().click();
+    const goalTabs = page.getByRole("navigation", { name: "Goal 视图" });
+    await goalTabs.getByRole("button", { name: "Tasks" }).click();
+    await page.getByText("Approve the selected workspace and continue the Goal.", { exact: true }).click();
+    const remoteGateDrawer = page.getByRole("dialog");
+    const remoteGateText = await remoteGateDrawer.innerText();
+    const expectedRemoteCommand = "loopx todo complete --goal-id remote-b-goal --todo-id todo_remote_gate --decision-outcome approve --execute";
+    if (!remoteGateText.includes(expectedRemoteCommand)) {
+      throw new Error(`A read-only SSH gate omitted its executable owner command: ${remoteGateText}`);
+    }
+    if (!remoteGateText.includes("Remote B")) {
+      throw new Error(`A read-only SSH gate omitted its owning source: ${remoteGateText}`);
+    }
+    await remoteGateDrawer.getByRole("button", { name: /关闭详情/ }).click();
+
     state.statusGates.delete("8876");
     state.statusRequestsByPort.set("8876", 0);
     const remoteAEnsureGate = deferred();
@@ -260,7 +301,7 @@ async function main() {
     await page.getByText("SSH 隧道 · 可创建 Goal", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
     await page.getByRole("button", { name: "创建 Goal" }).first().click();
     const composer = page.getByRole("textbox", { name: "发送消息" });
-    await composer.fill("我想创建一个长期 Goal：\n目标：https://jira.example.test/browse/PROJECT-123\n完成标准：创建 PR");
+    await composer.fill("我想创建一个长期 Goal：\n目标：https://jira.example.test/browse/PROJECT-123\n完成标准：创建 PR\n继续方式：不开启 Heartbeat");
     await composer.press("Control+Enter");
     await page.getByText("确认执行", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
     const confirmationCard = page.locator(".personal-confirmation-card");
