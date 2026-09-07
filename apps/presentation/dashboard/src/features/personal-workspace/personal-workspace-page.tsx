@@ -45,6 +45,7 @@ import type {
 import type { MachineBindingToken } from "./machine-workspace-authority";
 import { goalTitleFor, workspaceHomeLaneForGoal } from "./personal-workspace-model";
 import { routeWorkspaceInput } from "./personal-workspace-router";
+import { goalTitleFromMessage, proposalFields } from "./proposal-presentation";
 import { WorkspaceSettingsPage } from "./workspace-settings-page";
 import { readWorkspaceTheme, writeWorkspaceTheme, type WorkspaceTheme } from "./workspace-theme";
 import { WorkspaceShell } from "./workspace-shell";
@@ -445,46 +446,6 @@ function proposalStatus(status: TypedActionProposal["status"]): WorkspaceActionP
   return status;
 }
 
-function proposalFields(parameters: Record<string, unknown>, t: WorkspaceTranslate) {
-  const fieldLabels: Record<string, string> = {
-    agent_id: t("proposal.field.agentId"),
-    cadence: t("proposal.field.cadence"),
-    completion_criteria: t("proposal.field.completionCriteria"),
-    execution_boundary: t("proposal.field.executionBoundary"),
-    goal_id: t("proposal.field.goalId"),
-    heartbeat: t("proposal.field.heartbeat"),
-    initial_todos: t("proposal.field.initialTodos"),
-    objective: t("proposal.field.objective"),
-    operation: t("proposal.field.operation"),
-    permission: t("proposal.field.permission"),
-    reason: t("proposal.field.reason"),
-    stop_condition: t("proposal.field.stopCondition"),
-    target: t("proposal.field.target"),
-    timezone: t("proposal.field.timezone"),
-    title: t("proposal.field.title"),
-    workspace_ref: t("proposal.field.workspace"),
-  };
-  const priority = ["title", "objective", "completion_criteria", "execution_boundary", "permission", "agent_id", "workspace_ref", "initial_todos", "heartbeat", "stop_condition", "goal_id"];
-  return Object.entries(parameters)
-    .sort(([left], [right]) => {
-      const leftIndex = priority.indexOf(left);
-      const rightIndex = priority.indexOf(right);
-      return (leftIndex < 0 ? priority.length : leftIndex) - (rightIndex < 0 ? priority.length : rightIndex);
-    })
-    .slice(0, 10)
-    .map(([key, value]) => ({
-    key,
-    label: fieldLabels[key] ?? key.replaceAll("_", " "),
-    value: key === "workspace_ref"
-      ? value === "current"
-        ? t("proposal.workspace.current")
-        : t("proposal.workspace.named", { workspace: String(value ?? "current") })
-      : Array.isArray(value) ? value.join(" · ") : typeof value === "object" && value !== null
-      ? JSON.stringify(value)
-      : String(value ?? "—"),
-    }));
-}
-
 type GoalLifecycleOperation = "stop" | "resume" | "delete";
 
 type GoalLifecycleProjection = {
@@ -502,7 +463,11 @@ function lifecycleOperationFor(proposal: TypedActionProposal): GoalLifecycleOper
     : undefined;
 }
 
-function workspaceProposal(proposal: TypedActionProposal, t: WorkspaceTranslate): WorkspaceActionPreview {
+function workspaceProposal(
+  proposal: TypedActionProposal,
+  t: WorkspaceTranslate,
+  options: { currentWorkspaceLabel?: string } = {},
+): WorkspaceActionPreview {
   const lifecycleOperation = lifecycleOperationFor(proposal);
   const title = typeof proposal.normalized_parameters.title === "string"
     ? proposal.normalized_parameters.title
@@ -527,7 +492,10 @@ function workspaceProposal(proposal: TypedActionProposal, t: WorkspaceTranslate)
         : proposal.summary;
   return {
     actionKind: proposal.action_kind,
-    fields: proposalFields(proposal.normalized_parameters, t),
+    fields: proposalFields(proposal.normalized_parameters, t, {
+      actionKind: proposal.action_kind,
+      currentWorkspaceLabel: options.currentWorkspaceLabel,
+    }),
     goalId: typeof proposal.normalized_parameters.goal_id === "string" ? proposal.normalized_parameters.goal_id : undefined,
     impact: proposal.action_kind === "goal.create"
       ? t("proposal.impact.goalCreate")
@@ -573,17 +541,6 @@ function compactGoalSlug(value: string) {
   return `goal-${(hash >>> 0).toString(36)}`;
 }
 
-function goalTitleFromMessage(message: string, t: WorkspaceTranslate) {
-  const quoted = message.match(/[「“"]([^」”"]{2,80})[」”"]/u)?.[1];
-  if (quoted) return quoted.trim();
-  return message
-    .replace(/^(请|帮我|我想|给我|创建|新建|设置|please|i want to|create|set up)+/iu, "")
-    .replace(/(一个|新的)?\s*(goal|目标)/giu, "")
-    .replace(/[，。！？].*$/u, "")
-    .trim()
-    .slice(0, 80) || t("goal.defaultTitle");
-}
-
 function structuredFieldFromMessage(message: string, labels: string[]) {
   for (const line of message.split(/\r?\n/u)) {
     const trimmed = line.trim();
@@ -599,7 +556,7 @@ function structuredGoalIntentFromMessage(message: string, t: WorkspaceTranslate)
   const target = structuredFieldFromMessage(message, ["目标", "Objective"]);
   const completion = structuredFieldFromMessage(message, ["完成标准", "Completion criteria"]);
   const boundary = structuredFieldFromMessage(message, ["执行边界（可选）", "执行边界", "边界", "Execution boundary (optional)", "Execution boundary", "Boundary"]);
-  const title = (target || goalTitleFromMessage(message, t)).split(/[。；;\n]/u)[0].trim().slice(0, 80) || t("goal.defaultTitle");
+  const title = goalTitleFromMessage(target || message, t("goal.defaultTitle"));
   const objective = [target || title, completion ? t("goal.objectiveCompletion", { criteria: completion }) : "", boundary ? t("goal.objectiveBoundary", { boundary }) : ""]
     .filter(Boolean)
     .join("\n");
@@ -1038,7 +995,11 @@ export function PersonalWorkspacePage({
     try {
       local = callbacks.onPreviewAction
         ? await callbacks.onPreviewAction(request)
-        : workspaceProposal(await previewTypedAction(request, remoteGoalWrite ? actionTarget : undefined), t);
+        : workspaceProposal(
+          await previewTypedAction(request, remoteGoalWrite ? actionTarget : undefined),
+          t,
+          { currentWorkspaceLabel: remoteGoalWrite ? statusSourceControl?.activeSource.label : undefined },
+        );
     } catch (error) {
       if (!(error instanceof ChatApiError) || error.payload.error_code !== "action_preview_gate") throw error;
       const rawGate = error.payload.gate && typeof error.payload.gate === "object"
@@ -1298,7 +1259,11 @@ export function PersonalWorkspacePage({
         return;
       }
       const result = await applyTypedAction(proposal.previewId, remoteGoalWrite ? actionTarget : undefined);
-      const applied = workspaceProposal(result.proposal, t);
+      const applied = workspaceProposal(result.proposal, t, {
+        currentWorkspaceLabel: result.proposal.action_kind === "goal.create"
+          ? statusSourceControl?.activeSource.label
+          : undefined,
+      });
       setProposals((current) => ({ ...current, [proposal.previewId]: applied }));
       if (showDrawer) setSelection({ item: applied, kind: "proposal" });
       if (result.proposal.status !== "applied" || result.proposal.receipt?.projection_verified !== true) {

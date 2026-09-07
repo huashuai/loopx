@@ -912,12 +912,13 @@ export function ContextDrawer({ agents, callbacks, goalNotifications = [], goals
 
         {selection.kind === "proposal" ? (
           <>
-            <section className="personal-proposal-card">
-              <small>{selection.item.actionKind} · {selection.item.status}</small>
-              <h3>{selection.item.title}</h3>
-              <p>{selection.item.impact}</p>
-              {selection.item.status === "ready" ? <p className="personal-proposal-explainer">{t("drawer.proposalExplainer")}</p> : null}
-              <dl>{selection.item.fields.map((field) => <div key={field.key}><dt>{field.label}</dt><dd>{field.value}</dd></div>)}</dl>
+            <section className="personal-confirmation-card" data-action-kind={selection.item.actionKind}>
+              <header>
+                <small>{selection.item.status === "ready" ? t("drawer.proposalReady") : `${selection.item.actionKind} · ${selection.item.status}`}</small>
+                <h3>{selection.item.title}</h3>
+                <p>{selection.item.impact}</p>
+              </header>
+              {selection.item.fields.length ? <dl>{selection.item.fields.map((field) => <div data-proposal-field={field.key} key={field.key}><dt>{field.label}</dt><dd>{field.value}</dd></div>)}</dl> : null}
             </section>
             {selection.item.status === "applied" ? <p className="personal-proposal-state is-applied"><Check size={16} />{t("drawer.proposalApplied")}</p> : null}
             {selection.item.status === "applied" && selection.item.goalId ? <button className="personal-primary-action" onClick={() => { const goalId = selection.item.goalId!; onClose(); void callbacks.onOpenGoal?.(goalId); }} type="button"><ExternalLink size={16} />{selection.item.actionKind === "goal.create" ? t("drawer.proposalEnterGoal") : t("drawer.proposalViewGoal")}</button> : null}

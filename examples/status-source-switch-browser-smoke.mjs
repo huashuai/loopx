@@ -184,7 +184,7 @@ async function main() {
     await page.route("http://127.0.0.1:8876/api/actions/**", async (route) => {
       const request = route.request();
       const body = request.postDataJSON();
-      state.remoteActionRequests.push({ headers: request.headers(), url: request.url() });
+      state.remoteActionRequests.push({ body, headers: request.headers(), url: request.url() });
       const applying = request.url().endsWith("/apply");
       const proposal = {
         schema_version: "loopx_chat_action_proposal_v1",
@@ -260,8 +260,34 @@ async function main() {
     await page.getByText("SSH 隧道 · 可创建 Goal", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
     await page.getByRole("button", { name: "创建 Goal" }).first().click();
     const composer = page.getByRole("textbox", { name: "发送消息" });
-    await composer.fill("我想创建一个长期 Goal：远端发布准备\n目标：验证远端创建\n完成标准：远端返回验证回执");
+    await composer.fill("我想创建一个长期 Goal：\n目标：https://jira.example.test/browse/PROJECT-123\n完成标准：创建 PR");
     await composer.press("Control+Enter");
+    await page.getByText("确认执行", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+    const confirmationCard = page.locator(".personal-confirmation-card");
+    await confirmationCard.getByRole("heading", { name: "创建 Goal：PROJECT-123", exact: true }).waitFor({ state: "visible" });
+    const confirmationText = await confirmationCard.innerText();
+    for (const expected of ["创建 PR", "确认后允许写入", "Codex", "Remote A · 已配置工作区", "未启用", "Goal 完成时"]) {
+      if (!confirmationText.includes(expected)) throw new Error(`Goal confirmation omitted ${expected}: ${confirmationText}`);
+    }
+    for (const forbidden of ["jira.example.test", "workspace_write_on_confirmation", "{\"enabled\"", "goal_complete", "Goal ID"]) {
+      if (confirmationText.includes(forbidden)) throw new Error(`Goal confirmation exposed ${forbidden}: ${confirmationText}`);
+    }
+    if (await page.locator(".personal-proposal-explainer").count()) throw new Error("Goal confirmation repeated its consequence copy");
+    if (await confirmationCard.locator("dd").evaluateAll((elements) => elements.some((element) => !(element.textContent ?? "").trim()))) {
+      throw new Error(`Goal confirmation rendered an empty decision row: ${confirmationText}`);
+    }
+    const confirmationOverflow = await confirmationCard.evaluate((element) => element.scrollWidth - element.clientWidth);
+    if (confirmationOverflow > 1) throw new Error(`Goal confirmation has ${confirmationOverflow}px horizontal overflow`);
+    if (state.remoteActionRequests.length !== 1) throw new Error(`Expected one remote preview before confirmation, received ${state.remoteActionRequests.length}`);
+    if (state.remoteActionRequests.at(-1)?.body?.normalized_parameters?.title !== "PROJECT-123") {
+      throw new Error(`Issue-key title was not preserved in the remote preview: ${JSON.stringify(state.remoteActionRequests.at(-1)?.body)}`);
+    }
+    await page.screenshot({ path: resolve(outputDir, "remote-goal-confirmation.png"), fullPage: false, animations: "disabled" });
+    await page.setViewportSize({ width: 430, height: 900 });
+    const narrowConfirmationOverflow = await confirmationCard.evaluate((element) => element.scrollWidth - element.clientWidth);
+    if (narrowConfirmationOverflow > 1) throw new Error(`Narrow Goal confirmation has ${narrowConfirmationOverflow}px horizontal overflow`);
+    await page.screenshot({ path: resolve(outputDir, "remote-goal-confirmation-narrow.png"), fullPage: false, animations: "disabled" });
+    await page.setViewportSize({ width: 1512, height: 982 });
     await page.getByRole("button", { name: "创建 Goal 并开始首轮" }).click();
     await page.getByText("已完成：创建 Goal：远端发布准备", { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
     if (state.remoteActionRequests.length !== 2) throw new Error(`Expected remote preview/apply, received ${state.remoteActionRequests.length} requests`);
