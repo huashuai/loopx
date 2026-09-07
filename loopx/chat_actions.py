@@ -991,13 +991,18 @@ class ChatActionService(
                 objective=objective,
                 quota_guard=guard,
             )
+            session_channel_id = (
+                f"task.{todo_ids[0]}"
+                if write_scope and todo_ids
+                else f"goal.{goal_id}"
+            )
             session, _resumed = self.runtime_controller.open_session(
                 goal_id=goal_id,
                 agent_id=agent_id,
                 work_dir=project,
                 objective=objective,
                 mode="resume_latest",
-                channel_id=f"goal.{goal_id}",
+                channel_id=session_channel_id,
                 agent_goal_id=goal_id,
             )
             session_id = _opaque(session.get("session_id"), field="session_id")
